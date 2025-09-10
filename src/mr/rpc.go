@@ -23,7 +23,15 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
+type Args struct {
+}
 
+type Reply struct {
+	Method  int // 0:map 1:reduce
+	MapID   int
+	NReduce int
+	Files   []string
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
