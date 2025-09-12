@@ -1,10 +1,12 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"sort"
+	"time"
 )
 import "log"
 import "net/rpc"
@@ -37,58 +39,196 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
-	args := Args{}
-	reply := Reply{}
-	intermediate := []KeyValue{}
 
-	ok := call("Coordinator.RPCHandler", &args, &reply)
-	if !ok {
-		fmt.Printf("call failed!\n")
-		return
-	}
-	if reply.Method == 0 {
-		// Map
-		for _, filename := range reply.Files {
-			file, err := os.Open(filename)
-			if err != nil {
-				log.Fatalf("cannot open %v", filename)
-			}
-			content, err := io.ReadAll(file)
-			if err != nil {
-				log.Fatalf("cannot read %v", filename)
-			}
-			file.Close()
+	for {
+		time.Sleep(1000 * time.Millisecond)
 
-			kva := mapf(filename, string(content))
-			intermediate = append(intermediate, kva...)
+		fmt.Printf("CALL\n")
+
+		args := Args{}
+		reply := Reply{}
+
+		args.Status = 0
+		args.MapperID = -1
+		args.ReducerID = -1
+		ok := call("Coordinator.RPCHandler", &args, &reply)
+		if !ok {
+			fmt.Printf("call failed!\n")
+			return
 		}
+		if reply.TaskType == 0 {
+			// Map
+			args.TaskType = 0
+			args.MapperID = reply.MapperID
 
-		sort.Sort(ByKey(intermediate))
+			name2kv := map[string]ByKey{}
 
-		// Combine
-		i := 0
-		for i < len(intermediate) {
-			j := i + 1
-			for j < len(intermediate) && intermediate[i].Key == intermediate[j].Key {
-				j++
+			fmt.Printf("Map%v\t: begin work\n", args.MapperID)
+
+			for _, filename := range reply.Files {
+				fmt.Printf("Map%v\t: map file:%v\n", args.MapperID, filename)
+
+				intermediate := []KeyValue{}
+
+				file, err := os.Open(filename)
+				if err != nil {
+					log.Fatalf("cannot open %v", filename)
+				}
+				content, err := io.ReadAll(file)
+				if err != nil {
+					log.Fatalf("cannot read %v", filename)
+				}
+				file.Close()
+
+				kva := mapf(filename, string(content))
+				intermediate = append(intermediate, kva...)
+
+				i := 0
+				for i < len(intermediate) {
+					kv := KeyValue{}
+					kv.Key = intermediate[i].Key
+					kv.Value = intermediate[i].Value
+					reducerID := ihash(kv.Key) % reply.NReduce
+
+					name := fmt.Sprintf("mr-%v-%v", reply.MapperID, reducerID)
+
+					exit := false
+					for _, ifilename := range args.IntermediateFiles {
+						if ifilename == name {
+							exit = true
+							break
+						}
+					}
+					if exit == false {
+						args.IntermediateFiles = append(args.IntermediateFiles, name)
+					}
+
+					name2kv[name] = append(name2kv[name], kv)
+
+					//i = j
+					i++
+				}
+			}
+			// store
+			fmt.Printf("Map%v\t: store\n", args.MapperID)
+
+			for name, kva := range name2kv {
+
+				tmpfile, errCf := os.CreateTemp("./", "temp_*")
+				if errCf != nil {
+					log.Fatal(errCf)
+				}
+
+				enc := json.NewEncoder(tmpfile)
+				for _, kv := range kva {
+					errEc := enc.Encode(&kv)
+					if errEc != nil {
+						log.Fatal(errEc)
+					}
+				}
+				tmpfile.Close()
+
+				err := os.Rename(tmpfile.Name(), name)
+				if err != nil {
+					log.Fatal(err)
+				}
+				os.Remove(tmpfile.Name())
+			}
+			// finish map
+			fmt.Printf("Map%v\t: finish work\n", args.MapperID)
+
+			args.Status = 2
+
+			ok = call("Coordinator.RPCHandler", &args, &reply)
+			if !ok {
+				fmt.Printf("call failed!\n")
+				return
+			}
+		} else {
+			//reduce
+			args.TaskType = 1
+			args.ReducerID = reply.ReducerID
+
+			name2kv := map[string]ByKey{}
+
+			if reply.Files == nil {
+				continue
 			}
 
-			values := []string{}
-			for k := i; k < j; k++ {
-				values = append(values, intermediate[i].Value)
-			}
-			key := intermediate[i].Key
-			output := reducef(key, values)
-			reduceID := ihash(key) % reply.NReduce
-			oname := fmt.Sprintf("mr-%v-%v", reply.MapID, reduceID)
-			ofile, err := os.OpenFile(oname, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
-			if err != nil {
-				log.Fatal(err)
-			}
-			fmt.Fprintf(ofile, "%v %v\n", key, output)
-			ofile.Close()
+			fmt.Printf("Reduce%v\t: begin\n", args.ReducerID)
 
-			i = j
+			for _, filename := range reply.Files {
+
+				intermediate := []KeyValue{}
+
+				file, err := os.OpenFile(filename, os.O_RDONLY|os.O_CREATE, 0644)
+				if err != nil {
+					log.Fatal(err)
+				}
+				dec := json.NewDecoder(file)
+				for {
+					var kv KeyValue
+					if err = dec.Decode(&kv); err != nil {
+						break
+					}
+					intermediate = append(intermediate, kv)
+				}
+
+				sort.Sort(ByKey(intermediate))
+
+				i := 0
+				for i < len(intermediate) {
+					j := i + 1
+					for j < len(intermediate) && intermediate[i].Key == intermediate[j].Key {
+						j++
+					}
+
+					values := []string{}
+					for k := i; k < j; k++ {
+						values = append(values, intermediate[i].Value)
+					}
+
+					kv := KeyValue{}
+					kv.Key = intermediate[i].Key
+					kv.Value = reducef(kv.Key, values)
+
+					name := fmt.Sprintf("mr-out-%v", reply.ReducerID)
+
+					name2kv[name] = append(name2kv[name], kv)
+
+					i = j
+				}
+			}
+			// store
+			fmt.Printf("Reduce%v\t: store\n", args.ReducerID)
+
+			for name, kva := range name2kv {
+				tmpfile, errCf := os.CreateTemp("./", "temp_*")
+				if errCf != nil {
+					log.Fatal(errCf)
+				}
+				for _, kv := range kva {
+					fmt.Fprintf(tmpfile, "%v %v\n", kv.Key, kv.Value)
+				}
+				tmpfile.Close()
+
+				errRn := os.Rename(tmpfile.Name(), name)
+				if errRn != nil {
+					log.Fatal(errRn)
+				}
+				os.Remove(tmpfile.Name())
+			}
+
+			// finish reduce
+			fmt.Printf("Reduce%v\t: finish\n", args.ReducerID)
+
+			args.Status = 2
+			ok = call("Coordinator.RPCHandler", &args, &reply)
+			if !ok {
+				fmt.Printf("call failed!\n")
+				return
+			}
+
 		}
 	}
 	// uncomment to send the Example RPC to the coordinator.

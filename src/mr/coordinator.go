@@ -1,6 +1,11 @@
 package mr
 
-import "log"
+import (
+	"fmt"
+	"log"
+	"strconv"
+	"sync"
+)
 import "net"
 import "os"
 import "net/rpc"
@@ -8,19 +13,107 @@ import "net/http"
 
 type Coordinator struct {
 	// Your definitions here.
-	files   []string
-	mapID   int
-	nReduce int
+	files             []string
+	intermediateFiles []string
+	assignedFiles     map[string]bool
+
+	mapperID      int
+	reducerID     int
+	nReduce       int
+	mapperStatus  map[int]int
+	reducerStatus map[int]int
+	mapFinish     bool
+	reduceFinish  bool
+
+	mu_Mapper  sync.Mutex
+	mu_Reducer sync.Mutex
+
+	mu_RFinish sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
 
 func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
-	reply.Method = 0
-	reply.MapID = c.mapID
-	reply.NReduce = c.nReduce
-	c.mapID++
-	reply.Files = c.files
+	if args.Status == 0 {
+		// ready
+		if !c.mapFinish {
+			// map
+			c.mu_Mapper.Lock()
+			reply.TaskType = 0
+			if args.MapperID == -1 {
+				reply.MapperID = c.mapperID
+			} else {
+				reply.MapperID = args.MapperID
+			}
+
+			for _, item := range c.files {
+				if c.assignedFiles[item] == false {
+					reply.Files = append(reply.Files, item)
+					c.assignedFiles[item] = true
+				}
+			}
+			reply.NReduce = c.nReduce
+
+			c.mapperStatus[c.mapperID] = 1
+			c.mapperID++
+			c.mu_Mapper.Unlock()
+		} else {
+			// reduce
+			c.mu_Reducer.Lock()
+			reply.TaskType = 1
+			if args.ReducerID == -1 {
+				reply.ReducerID = c.reducerID
+			} else {
+				reply.ReducerID = args.ReducerID
+			}
+			for _, filename := range c.intermediateFiles {
+				tail, _ := strconv.Atoi(filename[len(filename)-1:])
+				if tail == c.reducerID {
+					reply.Files = append(reply.Files, filename)
+				}
+			}
+			c.reducerStatus[c.reducerID] = 1
+			c.reducerID = (c.reducerID + 1) % c.nReduce
+			c.mu_Reducer.Unlock()
+		}
+	} else if args.Status == 1 {
+		// working
+	} else if args.Status == 2 {
+		// finish
+		if args.TaskType == 0 {
+			// map
+			c.mu_Mapper.Lock()
+			c.mapperStatus[args.MapperID] = 2
+			for _, file := range args.IntermediateFiles {
+				c.intermediateFiles = append(c.intermediateFiles, file)
+			}
+
+			c.mapFinish = true
+			for _, st := range c.mapperStatus {
+				if st == 1 {
+					c.mapFinish = false
+					break
+				}
+			}
+			fmt.Printf("STATUE:%v\n", c.mapFinish)
+			c.mu_Mapper.Unlock()
+		} else {
+			// reduce
+			c.mu_Reducer.Lock()
+			c.reducerStatus[args.ReducerID] = 2
+			ifFinish := true
+			for _, st := range c.reducerStatus {
+				if st == 1 || st == -1 {
+					ifFinish = false
+					break
+				}
+			}
+			c.mu_RFinish.Lock()
+			c.reduceFinish = ifFinish
+			c.mu_RFinish.Unlock()
+			c.mu_Reducer.Unlock()
+		}
+	}
 	return nil
 }
 
@@ -52,6 +145,11 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
+	c.mu_RFinish.Lock()
+	if c.reduceFinish == true {
+		ret = true
+	}
+	c.mu_RFinish.Unlock()
 
 	return ret
 }
@@ -64,8 +162,24 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	// Your code here.
 	c.files = files
-	c.mapID = 0
+	c.intermediateFiles = make([]string, 0)
+
+	c.mapperID = 0
+	c.reducerID = 0
 	c.nReduce = nReduce
+	c.mapFinish = false
+	c.reduceFinish = false
+
+	c.reducerStatus = make(map[int]int)
+	for i := 0; i < nReduce; i++ {
+		c.reducerStatus[i] = -1
+	}
+	c.mapperStatus = make(map[int]int)
+
+	c.assignedFiles = make(map[string]bool)
+	for _, file := range files {
+		c.assignedFiles[file] = false
+	}
 
 	c.server()
 	return &c

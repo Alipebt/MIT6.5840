@@ -24,13 +24,19 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 type Args struct {
+	TaskType          int // 0:map 1:reduce
+	Status            int // 0:ready 1:working 2:finish
+	MapperID          int
+	ReducerID         int
+	IntermediateFiles []string
 }
 
 type Reply struct {
-	Method  int // 0:map 1:reduce
-	MapID   int
-	NReduce int
-	Files   []string
+	TaskType  int // 0:map 1:reduce
+	MapperID  int
+	ReducerID int
+	NReduce   int
+	Files     []string
 }
 
 // Cook up a unique-ish UNIX-domain socket name
