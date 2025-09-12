@@ -69,17 +69,16 @@ func Worker(mapf func(string, string) []KeyValue,
 
 func Domap(mapf func(string, string) []KeyValue, args *Args, reply *Reply) {
 
-	fmt.Printf("Map%v : \n", reply.MapperID)
-	fmt.Printf("  |- Begin Map -----\n")
+	//fmt.Printf("Map%v : \n", reply.MapperID)
+	//fmt.Printf("  |- Begin Map -----\n")
 
 	args.TaskType = 0
 	args.MapperID = reply.MapperID
 
 	name2kv := map[string]ByKey{}
+	intermediate := []KeyValue{}
 
 	for _, filename := range reply.Files {
-
-		intermediate := []KeyValue{}
 
 		file, err := os.Open(filename)
 		if err != nil {
@@ -94,33 +93,34 @@ func Domap(mapf func(string, string) []KeyValue, args *Args, reply *Reply) {
 		kva := mapf(filename, string(content))
 		intermediate = append(intermediate, kva...)
 
-		i := 0
-		for i < len(intermediate) {
-			kv := KeyValue{}
-			kv.Key = intermediate[i].Key
-			kv.Value = intermediate[i].Value
-			reducerID := ihash(kv.Key) % reply.NReduce
-
-			name := fmt.Sprintf("mr-%v-%v", reply.MapperID, reducerID)
-
-			exit := false
-			for _, ifilename := range args.IntermediateFiles {
-				if ifilename == name {
-					exit = true
-					break
-				}
-			}
-			if exit == false {
-				args.IntermediateFiles = append(args.IntermediateFiles, name)
-			}
-
-			name2kv[name] = append(name2kv[name], kv)
-
-			i++
-		}
 	}
+
+	i := 0
+	for i < len(intermediate) {
+		kv := KeyValue{}
+		kv.Key = intermediate[i].Key
+		kv.Value = intermediate[i].Value
+		reducerID := ihash(kv.Key) % reply.NReduce
+
+		name := fmt.Sprintf("mr-%v-%v", reply.MapperID, reducerID)
+		name2kv[name] = append(name2kv[name], kv)
+
+		exit := false
+		for _, ifilename := range args.IntermediateFiles {
+			if ifilename == name {
+				exit = true
+				break
+			}
+		}
+		if exit == false {
+			args.IntermediateFiles = append(args.IntermediateFiles, name)
+		}
+
+		i++
+	}
+
 	// store
-	fmt.Printf("  | Store\n")
+	//fmt.Printf("  | Store\n")
 	for name, kva := range name2kv {
 
 		tmpfile, errCf := os.CreateTemp("./", "temp_*")
@@ -152,22 +152,20 @@ func Domap(mapf func(string, string) []KeyValue, args *Args, reply *Reply) {
 		return
 	}
 
-	fmt.Printf("  |- Finish Map -----\n\n")
+	//fmt.Printf("  |- Finish Map -----\n\n")
 
 }
 
 func Doreduce(reducef func(string, []string) string, args *Args, reply *Reply) {
-	fmt.Printf("Reduce%v : \n", reply.ReducerID)
-	fmt.Printf("  |- Begin Reduce -----\n")
+	//fmt.Printf("Reduce%v : \n", reply.ReducerID)
+	//fmt.Printf("  |- Begin Reduce -----\n")
 	args.TaskType = 1
 	args.ReducerID = reply.ReducerID
 
 	name2kv := map[string]ByKey{}
+	intermediate := []KeyValue{}
 
 	for _, filename := range reply.Files {
-
-		intermediate := []KeyValue{}
-
 		file, err := os.OpenFile(filename, os.O_RDONLY|os.O_CREATE, 0644)
 		if err != nil {
 			log.Fatal(err)
@@ -180,34 +178,34 @@ func Doreduce(reducef func(string, []string) string, args *Args, reply *Reply) {
 			}
 			intermediate = append(intermediate, kv)
 		}
-
-		sort.Sort(ByKey(intermediate))
-
-		i := 0
-		for i < len(intermediate) {
-			j := i + 1
-			for j < len(intermediate) && intermediate[i].Key == intermediate[j].Key {
-				j++
-			}
-
-			values := []string{}
-			for k := i; k < j; k++ {
-				values = append(values, intermediate[k].Value)
-			}
-
-			kv := KeyValue{}
-			kv.Key = intermediate[i].Key
-			kv.Value = reducef(kv.Key, values)
-
-			name := fmt.Sprintf("mr-out-%v", reply.ReducerID)
-
-			name2kv[name] = append(name2kv[name], kv)
-
-			i = j
-		}
 	}
+	sort.Sort(ByKey(intermediate))
+
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[i].Key == intermediate[j].Key {
+			j++
+		}
+
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+
+		kv := KeyValue{}
+		kv.Key = intermediate[i].Key
+		kv.Value = reducef(kv.Key, values)
+
+		name := fmt.Sprintf("mr-out-%v", reply.ReducerID)
+
+		name2kv[name] = append(name2kv[name], kv)
+
+		i = j
+	}
+
 	// store
-	fmt.Printf("  | Store\n")
+	//fmt.Printf("  | Store\n")
 	for name, kva := range name2kv {
 		tmpfile, errCf := os.CreateTemp("./", "temp_*")
 		if errCf != nil {
@@ -234,7 +232,7 @@ func Doreduce(reducef func(string, []string) string, args *Args, reply *Reply) {
 		return
 	}
 
-	fmt.Printf("  |- Finish Reduce -----\n\n")
+	//fmt.Printf("  |- Finish Reduce -----\n\n")
 }
 
 // example function to show how to make an RPC call to the coordinator.

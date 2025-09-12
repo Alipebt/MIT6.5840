@@ -45,10 +45,13 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 				reply.MapperID = args.MapperID
 			}
 
+			//var assigned map[string]bool
 			for _, item := range c.files {
 				if c.assignedFiles[item] == false {
 					reply.Files = append(reply.Files, item)
 					c.assignedFiles[item] = true
+					//assigned[item] = true
+					break
 				}
 			}
 			reply.NReduce = c.nReduce
@@ -56,6 +59,25 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 			c.mapperStatus[c.mapperID] = 1
 			c.mapperID++
 			c.mu_Mapper.Unlock()
+
+			//// keep alive
+			//timer := time.NewTimer(10 * time.Second)
+			//status := 1
+			//for status == 1 {
+			//	select {
+			//	case <-timer.C:
+			//		// 计时器触发
+			//		c.mu_Mapper.Lock()
+			//		c.mapperStatus[c.mapperID] = -1
+			//		for oldFile, oldAssigned := range assigned {
+			//			c.assignedFiles[oldFile] = oldAssigned
+			//		}
+			//		c.mu_Mapper.Unlock()
+			//	}
+			//	c.mu_Mapper.Lock()
+			//	status = c.mapperStatus[c.mapperID]
+			//	c.mu_Mapper.Unlock()
+			//}
 		} else {
 			// reduce
 			c.mu_Reducer.Lock()
@@ -74,6 +96,7 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 			c.reducerStatus[c.reducerID] = 1
 			c.reducerID = (c.reducerID + 1) % c.nReduce
 			c.mu_Reducer.Unlock()
+
 		}
 	} else if args.Status == 2 {
 		// finish
@@ -86,6 +109,12 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 			}
 
 			c.mapFinish = true
+			for _, ok := range c.assignedFiles {
+				if !ok {
+					c.mapFinish = false
+					break
+				}
+			}
 			for _, st := range c.mapperStatus {
 				if st == 1 {
 					c.mapFinish = false
@@ -110,6 +139,7 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 			c.mu_Reducer.Unlock()
 		}
 	}
+
 	return nil
 }
 
