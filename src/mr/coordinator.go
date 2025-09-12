@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"fmt"
 	"log"
 	"strconv"
 	"sync"
@@ -76,8 +75,6 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 			c.reducerID = (c.reducerID + 1) % c.nReduce
 			c.mu_Reducer.Unlock()
 		}
-	} else if args.Status == 1 {
-		// working
 	} else if args.Status == 2 {
 		// finish
 		if args.TaskType == 0 {
@@ -95,7 +92,6 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 					break
 				}
 			}
-			fmt.Printf("STATUE:%v\n", c.mapFinish)
 			c.mu_Mapper.Unlock()
 		} else {
 			// reduce
