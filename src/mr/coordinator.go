@@ -76,30 +76,7 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	// Keep Alive
-	now := time.Now()
-	for i, item := range c.tasks {
-		delay := item.timer.Add(10 * time.Second)
-		if now.Before(delay) || item.Status == TaskCompleted {
-			continue
-		}
-		c.tasks[i].Status = TaskFailed
-		//fmt.Printf("Task %v Timeout\n", c.tasks[i].Id)
-		if item.TaskType == MapTask {
-			for _, filename := range item.ProcessFile {
-				if c.files[filename] != FileCompleted {
-					c.files[filename] = FileUnassigned
-				}
-			}
-		} else if item.TaskType == ReduceTask {
-			for _, filename := range item.ProcessFile {
-				if c.intermediateFiles[filename] != FileCompleted {
-					c.intermediateFiles[filename] = FileUnassigned
-				}
-			}
-		}
-	}
+	c.HeartBeat()
 
 	task := args.Task
 	switch task.TaskType {
@@ -107,7 +84,6 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 		reprocess := false
 		for _, item := range c.tasks {
 			if item.Status == TaskFailed {
-				//fmt.Printf("Task %v Reprocess\n", c.tasks[i].Id)
 				reprocess = true
 				reply.Task = Task{
 					TaskType:    item.TaskType,
@@ -230,6 +206,31 @@ func (c *Coordinator) GetPhase() Phase {
 		}
 	}
 	return phase
+}
+
+// HeartBeat keep the task alive
+func (c *Coordinator) HeartBeat() {
+	now := time.Now()
+	for i, item := range c.tasks {
+		delay := item.timer.Add(10 * time.Second)
+		if now.Before(delay) || item.Status == TaskCompleted {
+			continue
+		}
+		c.tasks[i].Status = TaskFailed
+		if item.TaskType == MapTask {
+			for _, filename := range item.ProcessFile {
+				if c.files[filename] != FileCompleted {
+					c.files[filename] = FileUnassigned
+				}
+			}
+		} else if item.TaskType == ReduceTask {
+			for _, filename := range item.ProcessFile {
+				if c.intermediateFiles[filename] != FileCompleted {
+					c.intermediateFiles[filename] = FileUnassigned
+				}
+			}
+		}
+	}
 }
 
 // an example RPC handler.
