@@ -46,20 +46,20 @@ func Worker(mapf func(string, string) []KeyValue,
 		args := Args{}
 		reply := Reply{}
 
-		args.Status = 0
-		args.MapperID = -1
-		args.ReducerID = -1
+		args.Task.TaskType = UnknowTaskType
 		ok := call("Coordinator.RPCHandler", &args, &reply)
 		if !ok {
 			fmt.Printf("call failed!\n")
 			return
 		}
-		if reply.TaskType == 0 {
+		if reply.Task.TaskType == MapTask {
 			// Map
 			Domap(mapf, &args, &reply)
-		} else {
-			//reduce
+		} else if reply.Task.TaskType == ReduceTask {
+			// Reduce
 			Doreduce(reducef, &args, &reply)
+		} else if reply.Task.TaskType == UnknowTaskType {
+			//fmt.Printf("No tasks obtained.\n")
 		}
 	}
 	// uncomment to send the Example RPC to the coordinator.
@@ -69,16 +69,15 @@ func Worker(mapf func(string, string) []KeyValue,
 
 func Domap(mapf func(string, string) []KeyValue, args *Args, reply *Reply) {
 
-	fmt.Printf("Map%v : \n", reply.MapperID)
+	//fmt.Printf("Map%v : \n", reply.Task.Id)
 
-	args.TaskType = 0
-	args.MapperID = reply.MapperID
+	intermediate := ByKey{}
+	file2result := map[string]ByKey{}
 
-	name2kv := map[string]ByKey{}
-	intermediate := []KeyValue{}
+	task := reply.Task
 
-	for _, filename := range reply.Files {
-
+	// Read and process
+	for _, filename := range task.ProcessFile {
 		file, err := os.Open(filename)
 		if err != nil {
 			log.Fatalf("cannot open %v", filename)
@@ -91,59 +90,57 @@ func Domap(mapf func(string, string) []KeyValue, args *Args, reply *Reply) {
 
 		kva := mapf(filename, string(content))
 		intermediate = append(intermediate, kva...)
-
 	}
 
-	i := 0
-	for i < len(intermediate) {
+	// Get file name and result
+	for i := 0; i < len(intermediate); i++ {
+
 		kv := KeyValue{}
 		kv.Key = intermediate[i].Key
 		kv.Value = intermediate[i].Value
+
 		reducerID := ihash(kv.Key) % reply.NReduce
+		name := fmt.Sprintf("mr-%v-%v", reply.Task.Id, reducerID)
+		file2result[name] = append(file2result[name], kv)
 
-		name := fmt.Sprintf("mr-%v-%v", reply.MapperID, reducerID)
-		name2kv[name] = append(name2kv[name], kv)
-
-		exit := false
-		for _, ifilename := range args.IntermediateFiles {
-			if ifilename == name {
-				exit = true
-				break
+		record := false
+		for _, item := range task.Result {
+			if name == item {
+				record = true
 			}
 		}
-		if exit == false {
-			args.IntermediateFiles = append(args.IntermediateFiles, name)
+		if record == false {
+			task.Result = append(task.Result, name)
 		}
-
-		i++
 	}
 
-	// store
-	for name, kva := range name2kv {
+	// Store
+	for name, kva := range file2result {
 
-		tmpfile, errCf := os.CreateTemp("./", "temp_*")
-		if errCf != nil {
-			log.Fatal(errCf)
+		tmpfile, err := os.CreateTemp("./", "temp_*")
+		if err != nil {
+			log.Fatal(err)
 		}
 
 		enc := json.NewEncoder(tmpfile)
 		for _, kv := range kva {
-			errEc := enc.Encode(&kv)
-			if errEc != nil {
-				log.Fatal(errEc)
+			err = enc.Encode(&kv)
+			if err != nil {
+				log.Fatal(err)
 			}
 		}
 		tmpfile.Close()
 
-		err := os.Rename(tmpfile.Name(), name)
+		err = os.Rename(tmpfile.Name(), name)
 		if err != nil {
 			log.Fatal(err)
 		}
 		os.Remove(tmpfile.Name())
 	}
-	// finish map
-	args.Status = 2
-	args.MappedData = reply.Files
+
+	// finish map and call server
+	task.Status = TaskCompleted
+	args.Task = task
 	ok := call("Coordinator.RPCHandler", &args, &reply)
 	if !ok {
 		fmt.Printf("call failed!\n")
@@ -152,14 +149,15 @@ func Domap(mapf func(string, string) []KeyValue, args *Args, reply *Reply) {
 }
 
 func Doreduce(reducef func(string, []string) string, args *Args, reply *Reply) {
-	fmt.Printf("Reduce%v : \n", reply.ReducerID)
-	args.TaskType = 1
-	args.ReducerID = reply.ReducerID
 
-	name2kv := map[string]ByKey{}
+	//fmt.Printf("Reduce%v : \n", reply.Task.Id)
+
+	file2result := map[string]ByKey{}
 	intermediate := []KeyValue{}
 
-	for _, filename := range reply.Files {
+	task := reply.Task
+
+	for _, filename := range task.ProcessFile {
 		file, err := os.OpenFile(filename, os.O_RDONLY|os.O_CREATE, 0644)
 		if err != nil {
 			log.Fatal(err)
@@ -175,8 +173,7 @@ func Doreduce(reducef func(string, []string) string, args *Args, reply *Reply) {
 	}
 	sort.Sort(ByKey(intermediate))
 
-	i := 0
-	for i < len(intermediate) {
+	for i := 0; i < len(intermediate); {
 		j := i + 1
 		for j < len(intermediate) && intermediate[i].Key == intermediate[j].Key {
 			j++
@@ -191,35 +188,34 @@ func Doreduce(reducef func(string, []string) string, args *Args, reply *Reply) {
 		kv.Key = intermediate[i].Key
 		kv.Value = reducef(kv.Key, values)
 
-		name := fmt.Sprintf("mr-out-%v", reply.ReducerID)
-
-		name2kv[name] = append(name2kv[name], kv)
+		name := fmt.Sprintf("mr-out-%v", task.Id)
+		file2result[name] = append(file2result[name], kv)
+		task.Result = append(task.Result, name)
 
 		i = j
 	}
 
-	// store
-	fmt.Printf("  | Store\n")
-	for name, kva := range name2kv {
-		tmpfile, errCf := os.CreateTemp("./", "temp_*")
-		if errCf != nil {
-			log.Fatal(errCf)
+	// Store
+	for name, kva := range file2result {
+		tmpfile, err := os.CreateTemp("./", "temp_*")
+		if err != nil {
+			log.Fatal(err)
 		}
 		for _, kv := range kva {
 			fmt.Fprintf(tmpfile, "%v %v\n", kv.Key, kv.Value)
 		}
 		tmpfile.Close()
 
-		errRn := os.Rename(tmpfile.Name(), name)
-		if errRn != nil {
-			log.Fatal(errRn)
+		err = os.Rename(tmpfile.Name(), name)
+		if err != nil {
+			log.Fatal(err)
 		}
 		os.Remove(tmpfile.Name())
 	}
 
-	// finish reduce
-
-	args.Status = 2
+	// Finish Reduce
+	task.Status = TaskCompleted
+	args.Task = task
 	ok := call("Coordinator.RPCHandler", &args, &reply)
 	if !ok {
 		fmt.Printf("call failed!\n")

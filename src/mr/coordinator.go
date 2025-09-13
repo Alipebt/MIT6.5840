@@ -12,129 +12,178 @@ import "net/http"
 
 type Coordinator struct {
 	// Your definitions here.
-	files             []string
-	intermediateFiles []string
-	assignedFiles     map[string]bool
-	mappedData        map[string]bool
+	//files             []string
+	//intermediateFiles []string
+	//assignedFiles     map[string]bool
+	//mappedData        map[string]bool
 
-	mapperID      int
-	reducerID     int
-	nReduce       int
-	mapperStatus  map[int]int
-	reducerStatus map[int]int
-	mapFinish     bool
-	reduceFinish  bool
+	files             map[string]FileStatus
+	intermediateFiles map[string]FileStatus
+	tasks             []Task
 
-	mu_Mapper  sync.Mutex
-	mu_Reducer sync.Mutex
+	//mapperID  uint32
+	//reducerID uint32
+	workerID uint32
+	nReduce  int
+	//mapperStatus  map[int]int
+	//reducerStatus map[int]int
+	phase Phase
 
-	mu_RFinish sync.Mutex
+	mu sync.Mutex
 }
+type Task struct {
+	TaskType    TaskType
+	Id          uint32
+	Status      TaskStatus
+	ProcessFile []string
+	Result      []string
+}
+
+type TaskType int
+
+const (
+	UnknowTaskType TaskType = iota
+	MapTask
+	ReduceTask
+)
+
+type FileStatus int
+
+const (
+	UnknownFile FileStatus = iota
+	FileUnassigned
+	FileAssigned
+	FileCompleted
+)
+
+type TaskStatus int
+
+const (
+	UnknowTaskStatus TaskStatus = iota
+	TaskReady
+	TaskWorking
+	TaskCompleted
+)
+
+type Phase int
+
+const (
+	PhaseUnknown  Phase = iota
+	PhaseMap            // Map阶段
+	PhaseReduce         // Reduce阶段
+	PhaseComplete       // 完成阶段
+)
 
 // Your code here -- RPC handlers for the worker to call.
 
 func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
-	if args.Status == 0 {
-		// ready
-		if !c.mapFinish {
-			// map
-			c.mu_Mapper.Lock()
-			reply.TaskType = 0
-			if args.MapperID == -1 {
-				reply.MapperID = c.mapperID
-			} else {
-				reply.MapperID = args.MapperID
-			}
 
-			//TODO： 不需要bool
-			assigned := make(map[string]bool)
-			for _, item := range c.files {
-				if c.assignedFiles[item] == false {
-					reply.Files = append(reply.Files, item)
-					c.assignedFiles[item] = true
-					assigned[item] = true
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	task := args.Task
+	switch task.TaskType {
+	case UnknowTaskType:
+		if c.phase == PhaseMap {
+
+			var assigned []string
+			for filename, status := range c.files {
+				if status == FileUnassigned {
+					assigned = append(assigned, filename)
+					c.files[filename] = FileAssigned
 					break
 				}
+			}
+			reply.Task = Task{
+				TaskType:    MapTask,
+				Id:          c.workerID,
+				ProcessFile: assigned,
+				Status:      TaskWorking,
 			}
 			reply.NReduce = c.nReduce
-
-			c.mapperStatus[c.mapperID] = 1
-			c.mapperID++
-			c.mu_Mapper.Unlock()
-
-		} else {
-			// reduce
-			c.mu_Reducer.Lock()
-			reply.TaskType = 1
-
-			for id, status := range c.reducerStatus {
-				if status != 2 {
-					c.reducerID = id
-					break
-				}
-			}
-
-			if args.ReducerID == -1 {
-				reply.ReducerID = c.reducerID
+			if assigned == nil {
+				reply.Task.TaskType = UnknowTaskType
+				reply.Task.Status = UnknowTaskStatus
 			} else {
-				reply.ReducerID = args.ReducerID
+				c.workerID++
+				c.tasks = append(c.tasks, reply.Task)
 			}
-			for _, filename := range c.intermediateFiles {
+
+		} else if c.phase == PhaseReduce {
+
+			var assigned []string
+			reducerID := -1
+			for filename, status := range c.intermediateFiles {
 				tail, _ := strconv.Atoi(filename[len(filename)-1:])
-				if tail == c.reducerID {
-					reply.Files = append(reply.Files, filename)
+				if status == FileUnassigned && reducerID == -1 {
+					assigned = append(assigned, filename)
+					c.intermediateFiles[filename] = FileAssigned
+					reducerID = tail
+				} else if status == FileUnassigned && tail == reducerID {
+					assigned = append(assigned, filename)
+					c.intermediateFiles[filename] = FileAssigned
 				}
 			}
-			c.reducerStatus[c.reducerID] = 1
-			c.mu_Reducer.Unlock()
+			reply.Task = Task{
+				TaskType:    ReduceTask,
+				Id:          c.workerID,
+				ProcessFile: assigned,
+				Status:      TaskWorking,
+			}
+			if assigned == nil {
+				reply.Task.TaskType = UnknowTaskType
+				reply.Task.Status = UnknowTaskStatus
+			} else {
+				c.workerID++
+				c.tasks = append(c.tasks, reply.Task)
+			}
 
 		}
-	} else if args.Status == 2 {
-		// finish
-		if args.TaskType == 0 {
-			// map
-			c.mu_Mapper.Lock()
-			c.mapperStatus[args.MapperID] = 2
-			for _, file := range args.IntermediateFiles {
-				c.intermediateFiles = append(c.intermediateFiles, file)
+	case MapTask:
+		if task.Status == TaskCompleted {
+			c.UpdateTask(task)
+			for _, item := range task.ProcessFile {
+				c.files[item] = FileCompleted
 			}
-			for _, file := range args.MappedData {
-				c.mappedData[file] = true
+			for _, item := range task.Result {
+				c.intermediateFiles[item] = FileUnassigned
 			}
+		}
+		c.phase = c.GetPhase()
+	case ReduceTask:
+		if task.Status == TaskCompleted {
+			c.UpdateTask(task)
+			for _, item := range task.ProcessFile {
+				c.intermediateFiles[item] = FileCompleted
+			}
+		}
+		c.phase = c.GetPhase()
+	}
+	return nil
+}
 
-			c.mapFinish = true
-			for _, ok := range c.assignedFiles {
-				if !ok {
-					c.mapFinish = false
-					break
-				}
-			}
-			for _, item := range c.mappedData {
-				if item != true {
-					c.mapFinish = false
-					break
-				}
-			}
-			c.mu_Mapper.Unlock()
-		} else {
-			// reduce
-			c.mu_Reducer.Lock()
-			c.reducerStatus[args.ReducerID] = 2
-			ifFinish := true
-			for _, st := range c.reducerStatus {
-				if st == 1 || st == -1 {
-					ifFinish = false
-					break
-				}
-			}
-			c.mu_RFinish.Lock()
-			c.reduceFinish = ifFinish
-			c.mu_RFinish.Unlock()
-			c.mu_Reducer.Unlock()
+func (c *Coordinator) UpdateTask(task Task) {
+	for i, item := range c.tasks {
+		if task.TaskType == item.TaskType &&
+			task.Id == item.Id {
+			c.tasks[i] = task
 		}
 	}
+}
 
-	return nil
+func (c *Coordinator) GetPhase() Phase {
+	phase := PhaseComplete
+	for _, status := range c.intermediateFiles {
+		if status != FileCompleted {
+			phase = PhaseReduce
+		}
+	}
+	for _, status := range c.files {
+		if status != FileCompleted {
+			phase = PhaseMap
+		}
+	}
+	return phase
 }
 
 // an example RPC handler.
@@ -165,11 +214,9 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-	c.mu_RFinish.Lock()
-	if c.reduceFinish == true {
+	if c.phase == PhaseComplete {
 		ret = true
 	}
-	c.mu_RFinish.Unlock()
 
 	return ret
 }
@@ -181,29 +228,14 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	// Your code here.
-	c.files = files
-	c.intermediateFiles = make([]string, 0)
-
-	c.mapperID = 0
-	c.reducerID = 0
+	c.files = make(map[string]FileStatus)
+	for _, filename := range files {
+		c.files[filename] = FileUnassigned
+	}
+	c.intermediateFiles = make(map[string]FileStatus)
+	c.workerID = 0
 	c.nReduce = nReduce
-	c.mapFinish = false
-	c.reduceFinish = false
-
-	c.reducerStatus = make(map[int]int)
-	for i := 0; i < nReduce; i++ {
-		c.reducerStatus[i] = -1
-	}
-	c.mapperStatus = make(map[int]int)
-
-	c.assignedFiles = make(map[string]bool)
-	for _, file := range files {
-		c.assignedFiles[file] = false
-	}
-	c.mappedData = make(map[string]bool)
-	for _, file := range files {
-		c.mappedData[file] = false
-	}
+	c.phase = PhaseMap
 
 	c.server()
 	return &c
