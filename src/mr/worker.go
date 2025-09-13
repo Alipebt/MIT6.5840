@@ -54,10 +54,10 @@ func Worker(mapf func(string, string) []KeyValue,
 		}
 		if reply.Task.TaskType == MapTask {
 			// Map
-			Domap(mapf, &args, &reply)
+			DoMap(mapf, &args, &reply)
 		} else if reply.Task.TaskType == ReduceTask {
 			// Reduce
-			Doreduce(reducef, &args, &reply)
+			DoReduce(reducef, &args, &reply)
 		} else if reply.Task.TaskType == UnknowTaskType {
 			//fmt.Printf("No tasks obtained.\n")
 		}
@@ -67,9 +67,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 }
 
-func Domap(mapf func(string, string) []KeyValue, args *Args, reply *Reply) {
-
-	//fmt.Printf("Map%v : \n", reply.Task.Id)
+func DoMap(mapf func(string, string) []KeyValue, args *Args, reply *Reply) {
 
 	intermediate := ByKey{}
 	file2result := map[string]ByKey{}
@@ -148,9 +146,7 @@ func Domap(mapf func(string, string) []KeyValue, args *Args, reply *Reply) {
 	}
 }
 
-func Doreduce(reducef func(string, []string) string, args *Args, reply *Reply) {
-
-	//fmt.Printf("Reduce%v : \n", reply.Task.Id)
+func DoReduce(reducef func(string, []string) string, args *Args, reply *Reply) {
 
 	file2result := map[string]ByKey{}
 	intermediate := []KeyValue{}

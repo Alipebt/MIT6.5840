@@ -4,6 +4,7 @@ import (
 	"log"
 	"strconv"
 	"sync"
+	"time"
 )
 import "net"
 import "os"
@@ -11,22 +12,14 @@ import "net/rpc"
 import "net/http"
 
 type Coordinator struct {
-	// Your definitions here.
-	//files             []string
-	//intermediateFiles []string
-	//assignedFiles     map[string]bool
-	//mappedData        map[string]bool
-
 	files             map[string]FileStatus
 	intermediateFiles map[string]FileStatus
 	tasks             []Task
+	failed            map[uint32]Task
 
-	//mapperID  uint32
-	//reducerID uint32
 	workerID uint32
 	nReduce  int
-	//mapperStatus  map[int]int
-	//reducerStatus map[int]int
+
 	phase Phase
 
 	mu sync.Mutex
@@ -37,6 +30,8 @@ type Task struct {
 	Status      TaskStatus
 	ProcessFile []string
 	Result      []string
+
+	timer time.Time
 }
 
 type TaskType int
@@ -63,6 +58,7 @@ const (
 	TaskReady
 	TaskWorking
 	TaskCompleted
+	TaskFailed
 )
 
 type Phase int
@@ -81,66 +77,115 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Keep Alive
+	now := time.Now()
+	for i, item := range c.tasks {
+		delay := item.timer.Add(10 * time.Second)
+		if now.Before(delay) || item.Status == TaskCompleted {
+			continue
+		}
+		c.tasks[i].Status = TaskFailed
+		//fmt.Printf("Task %v Timeout\n", c.tasks[i].Id)
+		if item.TaskType == MapTask {
+			for _, filename := range item.ProcessFile {
+				if c.files[filename] != FileCompleted {
+					c.files[filename] = FileUnassigned
+				}
+			}
+		} else if item.TaskType == ReduceTask {
+			for _, filename := range item.ProcessFile {
+				if c.intermediateFiles[filename] != FileCompleted {
+					c.intermediateFiles[filename] = FileUnassigned
+				}
+			}
+		}
+	}
+
 	task := args.Task
 	switch task.TaskType {
 	case UnknowTaskType:
-		if c.phase == PhaseMap {
-
-			var assigned []string
-			for filename, status := range c.files {
-				if status == FileUnassigned {
-					assigned = append(assigned, filename)
-					c.files[filename] = FileAssigned
-					break
+		reprocess := false
+		for _, item := range c.tasks {
+			if item.Status == TaskFailed {
+				//fmt.Printf("Task %v Reprocess\n", c.tasks[i].Id)
+				reprocess = true
+				reply.Task = Task{
+					TaskType:    item.TaskType,
+					Id:          item.Id,
+					ProcessFile: item.ProcessFile,
+					Status:      TaskWorking,
+					timer:       time.Now(),
+				}
+				reply.NReduce = c.nReduce
+				if item.TaskType == MapTask {
+					for _, filename := range item.ProcessFile {
+						c.files[filename] = FileAssigned
+					}
+				} else if item.TaskType == ReduceTask {
+					for _, filename := range item.ProcessFile {
+						c.intermediateFiles[filename] = FileAssigned
+					}
 				}
 			}
-			reply.Task = Task{
-				TaskType:    MapTask,
-				Id:          c.workerID,
-				ProcessFile: assigned,
-				Status:      TaskWorking,
-			}
-			reply.NReduce = c.nReduce
-			if assigned == nil {
-				reply.Task.TaskType = UnknowTaskType
-				reply.Task.Status = UnknowTaskStatus
-			} else {
-				c.workerID++
-				c.tasks = append(c.tasks, reply.Task)
-			}
+		}
+		if reprocess == false {
+			if c.phase == PhaseMap {
+				var assigned []string
+				for filename, status := range c.files {
+					if status == FileUnassigned {
+						assigned = append(assigned, filename)
+						c.files[filename] = FileAssigned
+						break
+					}
+				}
+				reply.Task = Task{
+					TaskType:    MapTask,
+					Id:          c.workerID,
+					ProcessFile: assigned,
+					Status:      TaskWorking,
+					timer:       time.Now(),
+				}
+				reply.NReduce = c.nReduce
+				if assigned == nil {
+					reply.Task.TaskType = UnknowTaskType
+					reply.Task.Status = UnknowTaskStatus
+				} else {
+					c.workerID++
+					c.tasks = append(c.tasks, reply.Task)
+				}
+			} else if c.phase == PhaseReduce {
+				var assigned []string
+				reducerID := -1
+				for filename, status := range c.intermediateFiles {
+					tail, _ := strconv.Atoi(filename[len(filename)-1:])
+					if status == FileUnassigned && reducerID == -1 {
+						assigned = append(assigned, filename)
+						c.intermediateFiles[filename] = FileAssigned
+						reducerID = tail
+					} else if status == FileUnassigned && tail == reducerID {
+						assigned = append(assigned, filename)
+						c.intermediateFiles[filename] = FileAssigned
+					}
+				}
 
-		} else if c.phase == PhaseReduce {
-
-			var assigned []string
-			reducerID := -1
-			for filename, status := range c.intermediateFiles {
-				tail, _ := strconv.Atoi(filename[len(filename)-1:])
-				if status == FileUnassigned && reducerID == -1 {
-					assigned = append(assigned, filename)
-					c.intermediateFiles[filename] = FileAssigned
-					reducerID = tail
-				} else if status == FileUnassigned && tail == reducerID {
-					assigned = append(assigned, filename)
-					c.intermediateFiles[filename] = FileAssigned
+				reply.Task = Task{
+					TaskType:    ReduceTask,
+					Id:          c.workerID,
+					ProcessFile: assigned,
+					Status:      TaskWorking,
+					timer:       time.Now(),
+				}
+				if assigned == nil {
+					reply.Task.TaskType = UnknowTaskType
+					reply.Task.Status = UnknowTaskStatus
+				} else {
+					c.workerID++
+					c.tasks = append(c.tasks, reply.Task)
 				}
 			}
-			reply.Task = Task{
-				TaskType:    ReduceTask,
-				Id:          c.workerID,
-				ProcessFile: assigned,
-				Status:      TaskWorking,
-			}
-			if assigned == nil {
-				reply.Task.TaskType = UnknowTaskType
-				reply.Task.Status = UnknowTaskStatus
-			} else {
-				c.workerID++
-				c.tasks = append(c.tasks, reply.Task)
-			}
-
 		}
 	case MapTask:
-		if task.Status == TaskCompleted {
+		if task.Status == TaskCompleted && c.phase == PhaseMap {
 			c.UpdateTask(task)
 			for _, item := range task.ProcessFile {
 				c.files[item] = FileCompleted
@@ -151,7 +196,7 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 		}
 		c.phase = c.GetPhase()
 	case ReduceTask:
-		if task.Status == TaskCompleted {
+		if task.Status == TaskCompleted && c.phase == PhaseReduce {
 			c.UpdateTask(task)
 			for _, item := range task.ProcessFile {
 				c.intermediateFiles[item] = FileCompleted
@@ -159,6 +204,7 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 		}
 		c.phase = c.GetPhase()
 	}
+
 	return nil
 }
 
