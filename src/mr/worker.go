@@ -69,8 +69,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 func Domap(mapf func(string, string) []KeyValue, args *Args, reply *Reply) {
 
-	//fmt.Printf("Map%v : \n", reply.MapperID)
-	//fmt.Printf("  |- Begin Map -----\n")
+	fmt.Printf("Map%v : \n", reply.MapperID)
 
 	args.TaskType = 0
 	args.MapperID = reply.MapperID
@@ -120,7 +119,6 @@ func Domap(mapf func(string, string) []KeyValue, args *Args, reply *Reply) {
 	}
 
 	// store
-	//fmt.Printf("  | Store\n")
 	for name, kva := range name2kv {
 
 		tmpfile, errCf := os.CreateTemp("./", "temp_*")
@@ -145,20 +143,16 @@ func Domap(mapf func(string, string) []KeyValue, args *Args, reply *Reply) {
 	}
 	// finish map
 	args.Status = 2
-
+	args.MappedData = reply.Files
 	ok := call("Coordinator.RPCHandler", &args, &reply)
 	if !ok {
 		fmt.Printf("call failed!\n")
 		return
 	}
-
-	//fmt.Printf("  |- Finish Map -----\n\n")
-
 }
 
 func Doreduce(reducef func(string, []string) string, args *Args, reply *Reply) {
-	//fmt.Printf("Reduce%v : \n", reply.ReducerID)
-	//fmt.Printf("  |- Begin Reduce -----\n")
+	fmt.Printf("Reduce%v : \n", reply.ReducerID)
 	args.TaskType = 1
 	args.ReducerID = reply.ReducerID
 
@@ -205,7 +199,7 @@ func Doreduce(reducef func(string, []string) string, args *Args, reply *Reply) {
 	}
 
 	// store
-	//fmt.Printf("  | Store\n")
+	fmt.Printf("  | Store\n")
 	for name, kva := range name2kv {
 		tmpfile, errCf := os.CreateTemp("./", "temp_*")
 		if errCf != nil {
@@ -231,8 +225,6 @@ func Doreduce(reducef func(string, []string) string, args *Args, reply *Reply) {
 		fmt.Printf("call failed!\n")
 		return
 	}
-
-	//fmt.Printf("  |- Finish Reduce -----\n\n")
 }
 
 // example function to show how to make an RPC call to the coordinator.

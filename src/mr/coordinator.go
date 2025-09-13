@@ -15,6 +15,7 @@ type Coordinator struct {
 	files             []string
 	intermediateFiles []string
 	assignedFiles     map[string]bool
+	mappedData        map[string]bool
 
 	mapperID      int
 	reducerID     int
@@ -45,12 +46,13 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 				reply.MapperID = args.MapperID
 			}
 
-			//var assigned map[string]bool
+			//TODO： 不需要bool
+			assigned := make(map[string]bool)
 			for _, item := range c.files {
 				if c.assignedFiles[item] == false {
 					reply.Files = append(reply.Files, item)
 					c.assignedFiles[item] = true
-					//assigned[item] = true
+					assigned[item] = true
 					break
 				}
 			}
@@ -60,28 +62,18 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 			c.mapperID++
 			c.mu_Mapper.Unlock()
 
-			//// keep alive
-			//timer := time.NewTimer(10 * time.Second)
-			//status := 1
-			//for status == 1 {
-			//	select {
-			//	case <-timer.C:
-			//		// 计时器触发
-			//		c.mu_Mapper.Lock()
-			//		c.mapperStatus[c.mapperID] = -1
-			//		for oldFile, oldAssigned := range assigned {
-			//			c.assignedFiles[oldFile] = oldAssigned
-			//		}
-			//		c.mu_Mapper.Unlock()
-			//	}
-			//	c.mu_Mapper.Lock()
-			//	status = c.mapperStatus[c.mapperID]
-			//	c.mu_Mapper.Unlock()
-			//}
 		} else {
 			// reduce
 			c.mu_Reducer.Lock()
 			reply.TaskType = 1
+
+			for id, status := range c.reducerStatus {
+				if status != 2 {
+					c.reducerID = id
+					break
+				}
+			}
+
 			if args.ReducerID == -1 {
 				reply.ReducerID = c.reducerID
 			} else {
@@ -94,7 +86,6 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 				}
 			}
 			c.reducerStatus[c.reducerID] = 1
-			c.reducerID = (c.reducerID + 1) % c.nReduce
 			c.mu_Reducer.Unlock()
 
 		}
@@ -107,6 +98,9 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 			for _, file := range args.IntermediateFiles {
 				c.intermediateFiles = append(c.intermediateFiles, file)
 			}
+			for _, file := range args.MappedData {
+				c.mappedData[file] = true
+			}
 
 			c.mapFinish = true
 			for _, ok := range c.assignedFiles {
@@ -115,8 +109,8 @@ func (c *Coordinator) RPCHandler(args *Args, reply *Reply) error {
 					break
 				}
 			}
-			for _, st := range c.mapperStatus {
-				if st == 1 {
+			for _, item := range c.mappedData {
+				if item != true {
 					c.mapFinish = false
 					break
 				}
@@ -205,6 +199,10 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.assignedFiles = make(map[string]bool)
 	for _, file := range files {
 		c.assignedFiles[file] = false
+	}
+	c.mappedData = make(map[string]bool)
+	for _, file := range files {
+		c.mappedData[file] = false
 	}
 
 	c.server()

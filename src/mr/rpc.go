@@ -29,6 +29,7 @@ type Args struct {
 	MapperID          int
 	ReducerID         int
 	IntermediateFiles []string
+	MappedData        []string
 }
 
 type Reply struct {
