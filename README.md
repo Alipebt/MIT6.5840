@@ -12,7 +12,7 @@ README.md中给出的是部分代码，完整代码请参考并对照[这里](ht
 
 
 
-### Lab1  MapReduce
+### Lab 1: MapReduce
 
 `MapReaduce`的主要实现分为两部分，`worker`和`coordinator`。
 
@@ -453,4 +453,14 @@ if reprocess == false {
 ```
 
 最后在`Coordinater`的处理函数中加一个大大的锁就好了（对高并发不友好，但是懒得去一点点加锁了）
+
+---
+
+## Lab 2: Key/Value Server
+
+这个Lab很简单，就省略了
+
+---
+
+## Lab 3: Raft
 
