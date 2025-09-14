@@ -15,7 +15,6 @@ type Coordinator struct {
 	files             map[string]FileStatus
 	intermediateFiles map[string]FileStatus
 	tasks             []Task
-	failed            map[uint32]Task
 
 	workerID uint32
 	nReduce  int
@@ -64,7 +63,7 @@ const (
 type Phase int
 
 const (
-	PhaseUnknown  Phase = iota
+	UnknownPhase  Phase = iota
 	PhaseMap            // Map阶段
 	PhaseReduce         // Reduce阶段
 	PhaseComplete       // 完成阶段

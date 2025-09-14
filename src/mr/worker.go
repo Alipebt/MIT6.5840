@@ -59,7 +59,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			// Reduce
 			DoReduce(reducef, &args, &reply)
 		} else if reply.Task.TaskType == UnknowTaskType {
-			//fmt.Printf("No tasks obtained.\n")
 		}
 	}
 	// uncomment to send the Example RPC to the coordinator.
