@@ -183,82 +183,81 @@ if assigned == nil {
 // func DoMap(mapf func(string, string) []KeyValue, args *Args, reply *Reply) {}
 
 // 读取数据，并记录所有处理后的结果
-	for _, filename := range task.ProcessFile {
-		file, err := os.Open(filename)
-		if err != nil {
-			log.Fatalf("cannot open %v", filename)
-		}
-		content, err := io.ReadAll(file)
-		if err != nil {
-			log.Fatalf("cannot read %v", filename)
-		}
-		file.Close()
+for _, filename := range task.ProcessFile {
+    file, err := os.Open(filename)
+    if err != nil {
+        log.Fatalf("cannot open %v", filename)
+    }
+    content, err := io.ReadAll(file)
+    if err != nil {
+        log.Fatalf("cannot read %v", filename)
+    }
+    file.Close()
 
-       // kva 是键值对的集合
-		kva := mapf(filename, string(content))
-       // 中间数据，记录了所有文件中获取到的键值对
-		intermediate = append(intermediate, kva...)
-	}
+    // kva 是键值对的集合
+    kva := mapf(filename, string(content))
+    // 中间数据，记录了所有文件中获取到的键值对
+    intermediate = append(intermediate, kva...)
+}
 
 // 生成中间文件名称及内容的映射关系
-	for i := 0; i < len(intermediate); i++ {
+for i := 0; i < len(intermediate); i++ {
 
-		kv := KeyValue{}
-		kv.Key = intermediate[i].Key
-		kv.Value = intermediate[i].Value
+    kv := KeyValue{}
+    kv.Key = intermediate[i].Key
+    kv.Value = intermediate[i].Value
 
-       // 保证多个相同的key能够被正确的映射在同一个reduce任务里
-		reducerID := ihash(kv.Key) % reply.NReduce
-		name := fmt.Sprintf("mr-%v-%v", reply.Task.Id, reducerID)
-       // <文件名，键值对集合>
-		file2result[name] = append(file2result[name], kv)
+    // 保证多个相同的key能够被正确的映射在同一个reduce任务里
+    reducerID := ihash(kv.Key) % reply.NReduce
+    name := fmt.Sprintf("mr-%v-%v", reply.Task.Id, reducerID)
+    // <文件名，键值对集合>
+    file2result[name] = append(file2result[name], kv)
 
-       // 可能会多次生成相同名称的中间文件，防止其重复录入
-		record := false
-		for _, item := range task.Result {
-			if name == item {
-				record = true
-			}
-		}
-		if record == false {
-			task.Result = append(task.Result, name)
-		}
-	}
-
+    // 可能会多次生成相同名称的中间文件，防止其重复录入
+    record := false
+	for _, item := range task.Result {
+        if name == item {
+            record = true
+        }
+    }
+    if record == false {
+        task.Result = append(task.Result, name)
+    }
+}
 
 // 持久化
 // 使用temp文件重命名为所需的文件，以防止同一文件的并发读写
-	for name, kva := range file2result {
+for name, kva := range file2result {
 
-		tmpfile, err := os.CreateTemp("./", "temp_*")
-		if err != nil {
-			log.Fatal(err)
-		}
+    tmpfile, err := os.CreateTemp("./", "temp_*")
+    if err != nil {
+        log.Fatal(err)
+    }
 
-		enc := json.NewEncoder(tmpfile)
-		for _, kv := range kva {
-			err = enc.Encode(&kv)
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
-		tmpfile.Close()
+    enc := json.NewEncoder(tmpfile)
+    for _, kv := range kva {
+        err = enc.Encode(&kv)
+        if err != nil {
+            log.Fatal(err)
+        }
+    }
+    tmpfile.Close()
 
-		err = os.Rename(tmpfile.Name(), name)
-		if err != nil {
-			log.Fatal(err)
-		}
-		os.Remove(tmpfile.Name())
+    err = os.Rename(tmpfile.Name(), name)
+    if err != nil {
+        log.Fatal(err)
 	}
+    os.Remove(tmpfile.Name())
+}
 
 // 任务完成
-	task.Status = TaskCompleted
-	args.Task = task
-	ok := call("Coordinator.RPCHandler", &args, &reply)
-	if !ok {
-		fmt.Printf("call failed!\n")
-		return
-	}
+task.Status = TaskCompleted
+args.Task = task
+ok := call("Coordinator.RPCHandler", &args, &reply)
+if !ok {
+    fmt.Printf("call failed!\n")
+    return
+}
 ```
 
 在`Coordinater`接收到任务完成的请求后，会将原始数据文件标记为`已完成`，并将中间文件记录下来并标记为`未分配`，以供分配给`Reduce`任务。
@@ -304,54 +303,54 @@ for filename, status := range c.intermediateFiles {
 
 ```go
 // func DoReduce(reducef func(string, []string) string, args *Args, reply *Reply) 
-	file2result := map[string]ByKey{}
-	intermediate := []KeyValue{}
+file2result := map[string]ByKey{}
+intermediate := []KeyValue{}
 
-	task := reply.Task
+task := reply.Task
 
-	for _, filename := range task.ProcessFile {
-		file, err := os.OpenFile(filename, os.O_RDONLY|os.O_CREATE, 0644)
-		if err != nil {
-			log.Fatal(err)
-		}
-		dec := json.NewDecoder(file)
-       // 获取分配到的中间文件中所有的键值对
-		for {
-			var kv KeyValue
-			if err = dec.Decode(&kv); err != nil {
-				break
-			}
-			intermediate = append(intermediate, kv)
-		}
+for _, filename := range task.ProcessFile {
+    file, err := os.OpenFile(filename, os.O_RDONLY|os.O_CREATE, 0644)
+    if err != nil {
+        log.Fatal(err)
 	}
-	// 进行排序，使相同的key放在一起
-	sort.Sort(ByKey(intermediate))
+    dec := json.NewDecoder(file)
+    // 获取分配到的中间文件中所有的键值对
+    for {
+        var kv KeyValue
+        if err = dec.Decode(&kv); err != nil {
+            break
+        }
+        intermediate = append(intermediate, kv)
+    }
+}
+// 进行排序，使相同的key放在一起
+sort.Sort(ByKey(intermediate))
 
-	for i := 0; i < len(intermediate); {
-		j := i + 1
-       // 记录同一个key的value数量
-		for j < len(intermediate) && intermediate[i].Key == intermediate[j].Key {
-			j++
-		}
-		// 将相同key的value合并在一起
-		values := []string{}
-		for k := i; k < j; k++ {
-			values = append(values, intermediate[k].Value)
-		}
+for i := 0; i < len(intermediate); {
+    j := i + 1
+// 记录同一个key的value数量
+    for j < len(intermediate) && intermediate[i].Key == intermediate[j].Key {
+        j++
+    }
+// 将相同key的value合并在一起
+    values := []string{}
+    for k := i; k < j; k++ {
+        values = append(values, intermediate[k].Value)
+    }
 
-		kv := KeyValue{}
-		kv.Key = intermediate[i].Key
-       // 调用reduce函数
-		kv.Value = reducef(kv.Key, values)
+    kv := KeyValue{}
+    kv.Key = intermediate[i].Key
+    // 调用reduce函数
+    kv.Value = reducef(kv.Key, values)
 
-       // 最终生成的文件名
-		name := fmt.Sprintf("mr-out-%v", task.Id)
-       // <文件名，内容>
-		file2result[name] = append(file2result[name], kv)
-		task.Result = append(task.Result, name)
+    // 最终生成的文件名
+    name := fmt.Sprintf("mr-out-%v", task.Id)
+    // <文件名，内容>
+    file2result[name] = append(file2result[name], kv)
+    task.Result = append(task.Result, name)
 
-		i = j
-	}
+    i = j
+}
 
 // 持久化
 
@@ -362,13 +361,13 @@ for filename, status := range c.intermediateFiles {
 `Coordinater`中收到`reduce`结束的请求后，记录中间文件状态以及更新阶段。
 
 ```go
-		if task.Status == TaskCompleted && c.phase == PhaseReduce {
-			c.UpdateTask(task)
-			for _, item := range task.ProcessFile {
-				c.intermediateFiles[item] = FileCompleted
-			}
-		}
-		c.phase = c.GetPhase()
+if task.Status == TaskCompleted && c.phase == PhaseReduce {
+	c.UpdateTask(task)
+	for _, item := range task.ProcessFile {
+		c.intermediateFiles[item] = FileCompleted
+	}
+}
+c.phase = c.GetPhase()
 ```
 
 至此，在阶段为`已完成`后，结束`Coordinater`。
@@ -421,36 +420,36 @@ func (c *Coordinator) HeartBeat() {
 在`Coordinater`分配任务时，优先分配失效的任务，保证其`workerID`不会变化，否则生成的中间文件以及最终文件会有重复（若标为`失效`的其实依然在工作）。
 
 ```go
-		reprocess := false
-	    // 寻找是否有失效任务
-		for _, item := range c.tasks {
-			if item.Status == TaskFailed {
-				reprocess = true
-             // 直接将失效任务信息当作新任务发送给worker，
-             // 使其处理的内容以及生成的内容保持一致
-				reply.Task = Task{
-					TaskType:    item.TaskType,
-					Id:          item.Id,
-					ProcessFile: item.ProcessFile,
-					Status:      TaskWorking,
-					timer:       time.Now(),
-				}
-				reply.NReduce = c.nReduce
-             // 更新文件状态
-				if item.TaskType == MapTask {
-					for _, filename := range item.ProcessFile {
-						c.files[filename] = FileAssigned
-					}
-				} else if item.TaskType == ReduceTask {
-					for _, filename := range item.ProcessFile {
-						c.intermediateFiles[filename] = FileAssigned
-					}
-				}
+reprocess := false
+// 寻找是否有失效任务
+for _, item := range c.tasks {
+	if item.Status == TaskFailed {
+		reprocess = true
+        // 直接将失效任务信息当作新任务发送给worker，
+        // 使其处理的内容以及生成的内容保持一致
+		reply.Task = Task{
+			TaskType:    item.TaskType,
+			Id:          item.Id,
+			ProcessFile: item.ProcessFile,
+			Status:      TaskWorking,
+			timer:       time.Now(),
+		}
+		reply.NReduce = c.nReduce
+        // 更新文件状态
+		if item.TaskType == MapTask {
+			for _, filename := range item.ProcessFile {
+				c.files[filename] = FileAssigned
+			}
+		} else if item.TaskType == ReduceTask {
+			for _, filename := range item.ProcessFile {
+				c.intermediateFiles[filename] = FileAssigned
 			}
 		}
-		if reprocess == false {
-    		// 分配新任务
-		}
+	}
+}
+if reprocess == false {
+    // 分配新任务
+}
 ```
 
 最后在`Coordinater`的处理函数中加一个大大的锁就好了（对高并发不友好，但是懒得去一点点加锁了）
