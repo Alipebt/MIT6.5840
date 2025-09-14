@@ -1,6 +1,10 @@
 package lock
 
 import (
+	"log"
+	"sync"
+
+	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
 )
 
@@ -11,6 +15,8 @@ type Lock struct {
 	// MakeLock().
 	ck kvtest.IKVClerk
 	// You may add code here
+	identifier string
+	mu         sync.Mutex
 }
 
 // The tester calls MakeLock() and passes in a k/v clerk; your code can
@@ -21,13 +27,32 @@ type Lock struct {
 func MakeLock(ck kvtest.IKVClerk, l string) *Lock {
 	lk := &Lock{ck: ck}
 	// You may add code here
+	lk.identifier = kvtest.RandValue(8)
 	return lk
 }
 
 func (lk *Lock) Acquire() {
 	// Your code here
+	for {
+		value, version, err := lk.ck.Get("l")
+		if value == "" || err == rpc.ErrNoKey {
+			err = lk.ck.Put("l", lk.identifier, version)
+			if err != rpc.OK {
+				continue
+			}
+		}
+		if value == lk.identifier {
+			break
+		}
+	}
 }
 
 func (lk *Lock) Release() {
 	// Your code here
+	value, version, err := lk.ck.Get("l")
+	if err == rpc.OK && value == lk.identifier {
+		lk.ck.Put("l", "", version)
+	} else {
+		log.Fatal("You are not released.\n")
+	}
 }
