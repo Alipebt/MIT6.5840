@@ -220,6 +220,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.updateNodeWithNewTerm(args.Term)
 		rf.resetElectionTicker()
 	}
+	reply.Term = rf.currentTerm
 }
 
 func (rf *Raft) GetStatus() Status {
@@ -306,7 +307,7 @@ func (rf *Raft) Election() {
 
 	rf.currentTerm++
 	rf.status = Candidater
-	rf.votedFor = rf.me
+
 	votes := 0
 	rvotes := 0
 	i := 0
@@ -321,45 +322,39 @@ func (rf *Raft) Election() {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
 			if server == rf.me {
+				rf.votedFor = rf.me
 				votes++
 				return
 			}
-			//term := rf.currentTerm
-			for {
-				//if rf.status != Candidater {
-				//	//|| term != rf.currentTerm
-				//	break
-				//}
-				reply := &RequestVoteReply{}
-				Debug(dVote, "S%v T%v RequestVote---> S%v", rf.me, rf.currentTerm, server)
 
-				rf.mu.Unlock()
-				ok := rf.sendRequestVote(server, args, reply)
-				rf.mu.Lock()
+			reply := &RequestVoteReply{}
+			Debug(dVote, "S%v T%v RequestVote---> S%v", rf.me, rf.currentTerm, server)
 
-				if !ok {
-					Debug(dVote, "S%v T%v RequestVote---> S%v failed", rf.me, rf.currentTerm, server)
-					//continue
-				}
-				if reply.Term > rf.currentTerm {
-					rf.updateNodeWithNewTerm(reply.Term)
-				}
-				if reply.VoteGranted == false {
-					rvotes++
-				} else if reply.VoteGranted == true {
-					votes++
-				}
+			rf.mu.Unlock()
+			ok := rf.sendRequestVote(server, args, reply)
+			rf.mu.Lock()
 
-				if votes > i/2 && rf.status == Candidater {
-					rf.status = Leader
-					Debug(dLeader, "S%v T%v become Leader", rf.me, rf.currentTerm)
-				} else if rvotes > i/2 {
-					rf.status = Follower
-					Debug(dLeader, "S%v T%v election failed", rf.me, rf.currentTerm)
-				}
-
-				break
+			if !ok {
+				Debug(dVote, "S%v T%v RequestVote---> S%v failed", rf.me, rf.currentTerm, server)
+				return
 			}
+			if reply.Term > rf.currentTerm {
+				rf.updateNodeWithNewTerm(reply.Term)
+			}
+			if reply.VoteGranted == false {
+				rvotes++
+			} else if reply.VoteGranted == true {
+				votes++
+			}
+
+			if votes > i/2 && rf.status == Candidater {
+				rf.status = Leader
+				Debug(dLeader, "S%v T%v become Leader", rf.me, rf.currentTerm)
+			} else if rvotes > i/2 {
+				rf.status = Follower
+				Debug(dLeader, "S%v T%v election failed", rf.me, rf.currentTerm)
+			}
+
 		}(i)
 	}
 }
@@ -380,28 +375,22 @@ func (rf *Raft) HeartBeat() {
 		go func(server int) {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
-			//term := rf.currentTerm
-			for {
-				//if rf.status != Leader {
-				//	//|| term != rf.currentTerm
-				//	break
-				//}
 
-				reply := &AppendEntriesReply{}
+			reply := &AppendEntriesReply{}
 
-				rf.mu.Unlock()
-				ok := rf.sendAppendEntries(server, args, reply)
-				rf.mu.Lock()
+			rf.mu.Unlock()
+			ok := rf.sendAppendEntries(server, args, reply)
+			rf.mu.Lock()
 
-				if !ok {
-					Debug(dTimer, "S%v T%v HeartBeat---> S%v failed", rf.me, rf.currentTerm, server)
-				}
-				if reply.Term > rf.currentTerm {
-					Debug(dLeader, "S%v T%v old term, become Follower", rf.me, rf.currentTerm)
-					rf.updateNodeWithNewTerm(reply.Term)
-				}
-				break
+			if !ok {
+				Debug(dTimer, "S%v T%v HeartBeat---> S%v failed", rf.me, rf.currentTerm, server)
+				return
 			}
+			if reply.Term > rf.currentTerm {
+				Debug(dLeader, "S%v T%v old term, become Follower", rf.me, rf.currentTerm)
+				rf.updateNodeWithNewTerm(reply.Term)
+			}
+
 		}(i)
 
 	}
