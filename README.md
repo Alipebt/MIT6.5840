@@ -464,3 +464,61 @@ if reprocess == false {
 
 ## Lab 3: Raft
 
+测试方案参考：[这里](https://github.com/warr99/mit6.824-lab)
+
+### Part 3A:  leader election
+
+`Leader`选举是`Raft`一致性算法的核心机制，确保分布式系统中始终有一个明确的领导者来协调操作。当`Follower`节点在指定时间内未收到`Leader`的心跳消息时，会触发选举过程。
+
+我们使用Go语言的`time.Ticker`来实现两个关键的定时任务：
+
+- 选举超时定时器：监控Leader心跳，超时后触发选举
+- 心跳定时器：Leader定期发送心跳维持领导地位
+
+`func (rf *Raft) ticker()`中首先需要初始化这两个`Ticker`，并在结束后关闭`Ticker`。使用`select{case}`来接收超时，然后执行相应的处理函数。在每次选举超时后，再次随机生成一个超时时间，防止所有服务器在同一刻发生超时选举导致脑裂。
+
+```go
+func (rf *Raft) ticker() {
+	// 初始化Ticker
+	for rf.killed() == false {
+		select {
+		case <-electionTicker.C:
+			Election()
+          resetElectionTicker()
+		case <-heartBeatTicker.C:
+			HeartBeat()
+		}
+	}
+}
+```
+
+`Election`函数会使当前服务器节点执行选举任务。首先将自己的`term+1`，节点状态改为`Candidater`，然后通过`RPC`向其他所有服务器发送`请求投票`。需要注意的是，由于`网络IO`会长时间阻塞进程，会影响到节点消息的收发，所以我们需要启用协程，每一个协程都会向一个固定的节点发送投票请求并等待回应，一旦收到回应则判断已收到的票数是否能够使自己成为Leader或是否投票失败`（拒绝的票数大于服务器数的一半）`。此外在`网络IO`的过程中需要先释放锁，结束后再加锁，防止影响其他关键操作的执行。
+
+在`Election`过程中一旦收到了比自己的`term`更高的节点的消息或该节点收到现有`Leader`的心跳`，则立马更新term并变为Follower。
+
+```go
+// Election()
+	for i, _ = range rf.peers {
+		go func(server int) {
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			// ......
+			rf.mu.Unlock()
+			ok := rf.sendRequestVote(server, args, reply)
+			rf.mu.Lock()
+			// ......
+          // 判断是否更变状态
+          if {
+           }
+		}(i)
+	}
+```
+
+在`HeartBeat()`中，也类似选举超时的处理方式，为每一个节点单独使用协程来进行通信，并根据返回的数据判断是否需要更新`term`和节点状态。其发送的心跳在接收方只需要判断任期是否不比自己小，是则重置选举超时，不是则不做任何处理。最后将当前节点的`term`作为返回值返回给`Leader`。
+
+在投票处理函数中则主要根据以下来规则来执行：
+
+- `Candidate`的`term`小于当前节点的`term`，则拒绝投票
+- `Candidater`的`term`等于当前节点的`term`，但当前节点已投过票，则拒绝投票
+- `Candidater`的`term`等于当前节点的`term`，且当前节点未投票或者已投给`Candidater`，则同意投票
+- `Candidater`的`term`大于当前节点的`term`，更新当前节点`term`和状态，并且同意投票
