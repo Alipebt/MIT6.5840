@@ -32,10 +32,15 @@ type Raft struct {
 	// TODO
 	currentTerm int
 	votedFor    int
-	logs        []Log
+	logs        map[int]Log
 
 	commitIndex int
 	lastApplied int
+
+	nextIndex  map[int]int
+	matchIndex map[int]int
+
+	applyCh chan raftapi.ApplyMsg
 
 	heartBeatTicker *time.Ticker
 	electionTicker  *time.Ticker
@@ -51,8 +56,8 @@ const (
 )
 
 type Log struct {
-	method string
-	term   int
+	Command interface{}
+	Term    int
 }
 
 // return currentTerm and whether this server
@@ -60,7 +65,6 @@ type Log struct {
 func (rf *Raft) GetState() (int, bool) {
 
 	// Your code here (3A).
-	// TODO
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	term := rf.currentTerm
@@ -136,7 +140,6 @@ type RequestVoteArgs struct {
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (3A).
-	// TODO
 	Term        int
 	VoteGranted bool
 }
@@ -151,13 +154,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term < rf.currentTerm || args.Term == rf.currentTerm && rf.votedFor != -1 {
 		// term is lower than mine, or the same term but already voted return false
 		reply.VoteGranted = false
-		Debug(dVote, "S%v T%v Vote---> S%v refused", rf.me, rf.currentTerm, args.CandidateId)
+		Debug(dVote, "S%v T%v ---Vote---> S%v refused", rf.me, rf.currentTerm, args.CandidateId)
 	} else if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) || args.Term > rf.currentTerm {
 		// not voted or higher term, return true
 		rf.updateNodeWithNewTerm(args.Term)
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
-		Debug(dVote, "S%v T%v Vote---> S%v", rf.me, rf.currentTerm, args.CandidateId)
+		Debug(dVote, "S%v T%v ---Vote---> S%v", rf.me, rf.currentTerm, args.CandidateId)
 	}
 	// reply this node`s term
 	reply.Term = rf.currentTerm
@@ -201,11 +204,18 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 }
 
 type AppendEntriesArgs struct {
-	PeerId int
-	Term   int
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+
+	PrevLogTerm int
+	Entries     map[int]Log
+
+	LeaderCommit int
 }
 type AppendEntriesReply struct {
-	Term int
+	Term    int
+	Success bool
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -213,14 +223,77 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	if args.Term >= rf.currentTerm {
 		if rf.status == Leader {
-			Debug(dLeader, "S%v T%v <---heartbeat S%v, become Follower", rf.me, rf.currentTerm, args.PeerId)
-		} else {
-			Debug(dTimer, "S%v T%v <---heartbeat S%v", rf.me, rf.currentTerm, args.PeerId)
+			Debug(dLeader, "S%v T%v <---heartbeat--- S%v, become Follower", rf.me, rf.currentTerm, args.LeaderId)
+		} else if args.Entries == nil {
+			Debug(dTimer, "S%v T%v <---heartbeat--- S%v", rf.me, rf.currentTerm, args.LeaderId)
 		}
 		rf.updateNodeWithNewTerm(args.Term)
 		rf.resetElectionTicker()
 	}
 	reply.Term = rf.currentTerm
+	//
+	////Debug(dCommit, "S%v T%v args.LeaderCommit:%v rf.commitIndex:%v args.PrevLogIndex+1:%v",
+	////	rf.me, rf.currentTerm, args.LeaderCommit, rf.commitIndex, args.PrevLogIndex)
+	//
+	//if args.LeaderCommit > rf.commitIndex {
+	//
+	//	if rf.lastApplied < args.LeaderCommit {
+	//		rf.commitIndex = rf.lastApplied
+	//	} else {
+	//		rf.commitIndex = args.LeaderCommit
+	//	}
+	//	Debug(dCommit, "S%v T%v Commit Command and Index:%v %v", rf.me, rf.currentTerm, rf.logs[rf.commitIndex].Command, rf.commitIndex)
+	//	rf.applyCh <- raftapi.ApplyMsg{
+	//		CommandValid: true,
+	//		Command:      rf.logs[rf.commitIndex].Command,
+	//		CommandIndex: rf.commitIndex,
+	//	}
+	//}
+	//
+	//if args.Entries == nil {
+	//	return
+	//}
+
+	// TODO: 3B
+	//success := true
+	//
+	//if len(rf.logs) > args.PrevLogIndex {
+	//	success = false
+	//	if args.PrevLogIndex >= 0 {
+	//		i := args.PrevLogIndex
+	//		for i = range rf.logs {
+	//			delete(rf.logs, i)
+	//		}
+	//		Debug(dLog, "S%v T%v delete logs because no commited", rf.me, rf.currentTerm, args.LeaderId)
+	//	}
+	//	Debug(dError, "S%v T%v <---failed to AppendEntries--- %v  1", rf.me, rf.currentTerm, args.LeaderId)
+	//} else if len(rf.logs) == args.PrevLogIndex {
+	//	if args.PrevLogIndex != 0 {
+	//		if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
+	//			success = false
+	//			Debug(dError, "S%v T%v <---failed to AppendEntries--- %v  2", rf.me, rf.currentTerm, args.LeaderId)
+	//		}
+	//		Debug(dError, "S%v T%v <---AppendEntries--- %v  1", rf.me, rf.currentTerm, args.LeaderId)
+	//	} else {
+	//		success = true
+	//		Debug(dError, "S%v T%v <---AppendEntries--- %v  2", rf.me, rf.currentTerm, args.LeaderId)
+	//	}
+	//} else if len(rf.logs) < args.PrevLogIndex {
+	//	// TODO
+	//	Debug(dError, "S%v T%v <---AppendEntries--- %v  3", rf.me, rf.currentTerm, args.LeaderId)
+	//}
+	//
+	//if success == true {
+	//	//rf.logs = append(rf.logs, args.Entries...)
+	//	for _, entry := range args.Entries {
+	//		rf.lastApplied++
+	//		rf.logs[rf.lastApplied] = entry
+	//	}
+	//	Debug(dCommit, "S%v T%v new logs:%v", rf.me, rf.currentTerm, rf.logs)
+	//}
+	//
+	//reply.Success = success
+
 }
 
 func (rf *Raft) GetStatus() Status {
@@ -242,11 +315,91 @@ func (rf *Raft) GetStatus() Status {
 // Term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
 	// Your code here (3B).
+	// TODO
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	index := rf.commitIndex
+	term := rf.currentTerm
+	isLeader := rf.status == Leader
+	if !isLeader {
+		return index, term, isLeader
+	}
+
+	//Debug(dClient, "S%v T%v Start agreement ", rf.me, rf.currentTerm)
+	//
+	//agreement := 0
+	//
+	//entries := make(map[int]Log)
+	//entry := Log{
+	//	Command: command,
+	//	Term:    rf.currentTerm,
+	//}
+	//entries[0] = entry
+	//
+	//prevLogIndex := len(rf.logs)
+	//
+	//for _, item := range entries {
+	//	rf.lastApplied++
+	//	rf.logs[rf.lastApplied] = item
+	//}
+	//
+	//Debug(dCommit, "S%v T%v new logs:%v", rf.me, rf.currentTerm, rf.logs)
+	//
+	//for i, _ := range rf.peers {
+	//	if i == rf.me {
+	//		continue
+	//	}
+	//	go func(server int) {
+	//		rf.mu.Lock()
+	//		defer rf.mu.Unlock()
+	//
+	//		args := &AppendEntriesArgs{
+	//			Term:         rf.currentTerm,
+	//			LeaderId:     rf.me,
+	//			PrevLogIndex: prevLogIndex,
+	//			PrevLogTerm:  0,
+	//			Entries:      entries,
+	//			LeaderCommit: rf.commitIndex,
+	//		}
+	//		if len(rf.logs) > 0 {
+	//			args.PrevLogTerm = rf.logs[len(rf.logs)].Term
+	//		}
+	//
+	//		reply := &AppendEntriesReply{}
+	//
+	//		rf.mu.Unlock()
+	//		ok := rf.sendAppendEntries(server, args, reply)
+	//		rf.mu.Lock()
+	//
+	//		if !ok {
+	//			Debug(dTimer, "S%v T%v ---AppendEntries---> S%v failed", rf.me, rf.currentTerm, server)
+	//			return
+	//		}
+	//		if !reply.Success {
+	//			if rf.nextIndex[server] > 0 {
+	//				rf.nextIndex[server]--
+	//			}
+	//			Debug(dLog, "S%v T%v ---unsuccess agree---> S%v", rf.me, rf.currentTerm, args.LeaderId)
+	//		} else {
+	//			rf.nextIndex[server]++
+	//			agreement++
+	//		}
+	//
+	//		if agreement > len(rf.peers)/2 {
+	//			rf.commitIndex++
+	//			Debug(dClient, "S%v T%v Success commit commend and Index:%v %v",
+	//				rf.me, rf.currentTerm, rf.logs[rf.commitIndex].Command, rf.commitIndex)
+	//			// call commit
+	//			rf.applyCh <- raftapi.ApplyMsg{
+	//				CommandValid: true,
+	//				Command:      rf.logs[rf.commitIndex].Command,
+	//				CommandIndex: rf.commitIndex,
+	//			}
+	//
+	//		}
+	//	}(i)
+	//}
 
 	return index, term, isLeader
 }
@@ -281,7 +434,7 @@ func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		// Your code here (3A)
 		// Check if a leader election should be started.
-		// TODO
+
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 		select {
@@ -310,14 +463,13 @@ func (rf *Raft) Election() {
 
 	votes := 0
 	rvotes := 0
-	i := 0
 	args := &RequestVoteArgs{
 		Term:        rf.currentTerm,
 		CandidateId: rf.me,
 	}
 
 	Debug(dInfo, "S%v T%v Election", rf.me, rf.currentTerm)
-	for i, _ = range rf.peers {
+	for i, _ := range rf.peers {
 		go func(server int) {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
@@ -328,14 +480,14 @@ func (rf *Raft) Election() {
 			}
 
 			reply := &RequestVoteReply{}
-			Debug(dVote, "S%v T%v RequestVote---> S%v", rf.me, rf.currentTerm, server)
+			Debug(dVote, "S%v T%v ---RequestVote---> S%v", rf.me, rf.currentTerm, server)
 
 			rf.mu.Unlock()
 			ok := rf.sendRequestVote(server, args, reply)
 			rf.mu.Lock()
 
 			if !ok {
-				Debug(dVote, "S%v T%v RequestVote---> S%v failed", rf.me, rf.currentTerm, server)
+				Debug(dVote, "S%v T%v ---RequestVote---> S%v failed", rf.me, rf.currentTerm, server)
 				return
 			}
 			if reply.Term > rf.currentTerm {
@@ -347,10 +499,10 @@ func (rf *Raft) Election() {
 				votes++
 			}
 
-			if votes > i/2 && rf.status == Candidater {
-				rf.status = Leader
+			if votes > len(rf.peers)/2 && rf.status == Candidater {
+				rf.initLeader()
 				Debug(dLeader, "S%v T%v become Leader", rf.me, rf.currentTerm)
-			} else if rvotes > i/2 {
+			} else if rvotes > len(rf.peers)/2 {
 				rf.status = Follower
 				Debug(dLeader, "S%v T%v election failed", rf.me, rf.currentTerm)
 			}
@@ -364,10 +516,8 @@ func (rf *Raft) HeartBeat() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	args := &AppendEntriesArgs{
-		Term:   rf.currentTerm,
-		PeerId: rf.me,
-	}
+	args := rf.createAppendEntriesArgs()
+
 	for i, _ := range rf.peers {
 		if i == rf.me {
 			continue
@@ -383,7 +533,7 @@ func (rf *Raft) HeartBeat() {
 			rf.mu.Lock()
 
 			if !ok {
-				Debug(dTimer, "S%v T%v HeartBeat---> S%v failed", rf.me, rf.currentTerm, server)
+				Debug(dTimer, "S%v T%v ---HeartBeat---> S%v failed", rf.me, rf.currentTerm, server)
 				return
 			}
 			if reply.Term > rf.currentTerm {
@@ -396,17 +546,15 @@ func (rf *Raft) HeartBeat() {
 	}
 }
 
+// updateNodeWithNewTerm update the term and change node`s new term status
 func (rf *Raft) updateNodeWithNewTerm(term int) {
-	//rf.mu.Lock()
-	//defer rf.mu.Unlock()
 	rf.currentTerm = term
 	rf.votedFor = -1
 	rf.status = Follower
 }
 
+// resetElectionTicker set a random time to ticker
 func (rf *Raft) resetElectionTicker() {
-	//rf.mu.Lock()
-	//defer rf.mu.Unlock()
 	ms := 500 + (rand.Int63() % 500)
 	if rf.electionTicker == nil {
 		rf.electionTicker = time.NewTicker(time.Duration(ms) * time.Millisecond)
@@ -415,14 +563,39 @@ func (rf *Raft) resetElectionTicker() {
 	}
 }
 
+// resetHeartBeatTicker set a constant time to ticker or init it
 func (rf *Raft) resetHeartBeatTicker() {
-	//rf.mu.Lock()
-	//defer rf.mu.Unlock()
 	if rf.heartBeatTicker == nil {
 		rf.heartBeatTicker = time.NewTicker(50 * time.Millisecond)
 	} else {
 		rf.heartBeatTicker.Reset(50 * time.Millisecond)
 	}
+}
+
+// initLeader change node`s status to leader and refresh volatile data or init it
+func (rf *Raft) initLeader() {
+	rf.status = Leader
+	for i, _ := range rf.peers {
+		rf.nextIndex[i] = rf.commitIndex
+		rf.matchIndex[i] = 0
+	}
+}
+
+func (rf *Raft) createAppendEntriesArgs() *AppendEntriesArgs {
+	args := &AppendEntriesArgs{
+		Term:         rf.currentTerm,
+		LeaderId:     rf.me,
+		PrevLogIndex: len(rf.logs),
+
+		PrevLogTerm: -1,
+		Entries:     nil,
+
+		LeaderCommit: rf.commitIndex,
+	}
+	if len(rf.logs) > 0 {
+		args.PrevLogTerm = rf.logs[len(rf.logs)].Term
+	}
+	return args
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -445,9 +618,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		dead:        0,
 		currentTerm: 0,
 		votedFor:    -1,
-		logs:        nil,
+		logs:        make(map[int]Log),
 		commitIndex: 0,
 		lastApplied: 0,
+		nextIndex:   make(map[int]int),
+		matchIndex:  make(map[int]int),
+		applyCh:     applyCh,
 		status:      Follower,
 	}
 
@@ -458,5 +634,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
+
 	return rf
 }

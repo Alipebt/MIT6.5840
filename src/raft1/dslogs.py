@@ -107,10 +107,53 @@ def main(
                     print(line.strip())
                 continue
 
-            # 检测并处理FAIL状态信息
-            if line.strip().startswith('FAIL') and ('exit status' not in line):
+            # 检测并处理Fatal状态信息
+            if line.strip().startswith('Fatal') and ('exit status' not in line):
+                if colorize:
+                    print(f"[{TOPICS['INFO']}]{line.strip()}[/{TOPICS['INFO']}]")
+                else:
+                    print(line.strip())
+                continue
+
+            if line.strip().startswith('exit'):
+                if colorize:
+                    print(f"[{TOPICS['INFO']}]{line.strip()}[/{TOPICS['INFO']}]")
+                else:
+                    print(line.strip())
+                continue
+
+            # 检测并处理测试失败信息
+            if line.strip().startswith('FAIL:'):
                 if colorize:
                     print(f"[{TOPICS['ERRO']}]{line.strip()}[/{TOPICS['ERRO']}]")
+                else:
+                    print(line.strip())
+                continue
+
+            if line.strip().startswith('panic'):
+                if colorize:
+                    print(f"[{TOPICS['INFO']}]{line.strip()}[/{TOPICS['INFO']}]")
+                else:
+                    print(line.strip())
+                continue
+
+            if line.strip().startswith('goroutine'):
+                if colorize:
+                    print(f"[{TOPICS['INFO']}]{line.strip()}[/{TOPICS['INFO']}]")
+                else:
+                    print(line.strip())
+                continue
+
+            if ('/home' in line) or ('go:' in line):
+                if colorize:
+                    print(f"[{TOPICS['INFO']}]{line.strip()}[/{TOPICS['INFO']}]")
+                else:
+                    print(line.strip())
+                continue
+
+            if ('error' in line):
+                if colorize:
+                    print(f"[{TOPICS['INFO']}]{line.strip()}[/{TOPICS['INFO']}]")
                 else:
                     print(line.strip())
                 continue

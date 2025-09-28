@@ -11,7 +11,7 @@ RACE_FLAG=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         -race|--race)
-            RACE_FLAG="-r"
+            RACE_FLAG="-race"
             shift
             ;;
         -p|--pattern)
@@ -48,24 +48,18 @@ mkdir -p "$LOG_DIR"
 # 清理函数
 cleanup() {
     rm -f "$PIPE_FILE"
-    echo "清理临时文件完成"
+#    echo "清理临时文件完成"
 }
 
 # 日志文件管理函数
 manage_log_files() {
-    echo "管理日志文件..."
-
     # 删除旧的日志文件，只保留最新的 MAX_LOG_FILES 个
     if ls "$LOG_DIR"/test_output_*.log 1> /dev/null 2>&1; then
         # 按时间排序，删除最旧的文件
         ls -t "$LOG_DIR"/test_output_*.log | tail -n +$(($MAX_LOG_FILES + 1)) | while read old_file; do
-            echo "删除旧日志文件: $old_file"
             rm -f "$old_file"
         done
     fi
-
-    echo "当前日志文件:"
-    ls -l "$LOG_DIR"/test_output_*.log 2>/dev/null || echo "暂无日志文件"
 }
 
 # 突出显示重要信息的函数
@@ -75,12 +69,17 @@ highlight_important() {
         echo "$line"
 
         # 突出显示以PASS、info、ok开头或以空格开头的行
-        if [[ "$line" =~ ^PASS ]] || \
-           [[ "$line" =~ ^info ]] || \
-           [[ "$line" =~ ^ok ]] || \
-           [[ "$line" =~ ^[[:space:]] ]]; then
-            echo -e "\033[32m>>> 重要信息: $line\033[0m"
-        fi
+#        if [[ "$line" =~ ^PASS ]] || \
+#           [[ "$line" =~ ^info ]] || \
+#           [[ "$line" =~ ^ok ]] || \
+#           [[ "$line" =~ ^--- ]] || \
+#           [[ "$line" =~ ^Test ]] || \
+#           [[ "$line" =~ ^FAIL ]] || \
+#           [[ "$line" =~ ^exit ]] || \
+#           [[ "$line" =~ ^Fatal ]] || \
+#           [[ "$line" =~ ^[[:space:]] ]]; then
+#            echo -e "$line"
+#        fi
     done
 }
 
@@ -89,7 +88,7 @@ trap cleanup EXIT
 
 # 显示参数信息
 echo "测试模式: $TEST_PATTERN"
-echo "日志计数: $LOG_COUNT"
+echo "服务器数: $LOG_COUNT"
 if [[ -n "$RACE_FLAG" ]]; then
     echo "竞态检测: 启用"
     RACE_INFO="（含竞态检测）"
@@ -97,7 +96,6 @@ else
     echo "竞态检测: 禁用"
     RACE_INFO=""
 fi
-echo "测试日志将保存到: $LOG_FILE"
 
 # 管理日志文件（清理旧的）
 manage_log_files
@@ -133,5 +131,3 @@ echo "=== 测试结束于: $(date) ===" >> "$LOG_FILE"
 # 显示日志文件信息
 echo -e "\n测试完成！"
 echo "详细日志已保存到: $LOG_FILE"
-echo -e "\n最近的日志文件:"
-ls -lt "$LOG_DIR"/test_output_*.log 2>/dev/null | head -$MAX_LOG_FILES || echo "暂无日志文件"
