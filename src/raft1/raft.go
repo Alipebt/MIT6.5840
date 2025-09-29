@@ -352,11 +352,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// TODO
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	index := -1
 	term := rf.currentTerm
 	isLeader := rf.status == Leader
 	if !isLeader {
-		return index, term, isLeader
+		return -1, term, isLeader
 	}
 
 	agreement := 0
@@ -420,15 +419,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				rf.mu.Unlock()
 				rf.applyCh <- applyMsg
 				rf.mu.Lock()
-
-				index = rf.commitIndex
 			}
+
 		}(i)
 	}
 	rf.mu.Unlock()
 	rf.wg.Wait()
 	rf.mu.Lock()
-	return index, term, isLeader
+	return len(rf.logs), term, isLeader
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
