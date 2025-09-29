@@ -6,12 +6,17 @@ set -e  # 遇到错误退出
 TEST_PATTERN="${1:-3A}"
 LOG_COUNT="${2:-3}"
 RACE_FLAG=""
+TIME_FLAG=""
 
 # 解析参数
 while [[ $# -gt 0 ]]; do
     case $1 in
-        -race|--race)
+        -r|--race)
             RACE_FLAG="-race"
+            shift
+            ;;
+        -t|--time)
+            TIME_FLAG="time"
             shift
             ;;
         -p|--pattern)
@@ -67,19 +72,6 @@ highlight_important() {
     while IFS= read -r line; do
         # 输出所有行
         echo "$line"
-
-        # 突出显示以PASS、info、ok开头或以空格开头的行
-#        if [[ "$line" =~ ^PASS ]] || \
-#           [[ "$line" =~ ^info ]] || \
-#           [[ "$line" =~ ^ok ]] || \
-#           [[ "$line" =~ ^--- ]] || \
-#           [[ "$line" =~ ^Test ]] || \
-#           [[ "$line" =~ ^FAIL ]] || \
-#           [[ "$line" =~ ^exit ]] || \
-#           [[ "$line" =~ ^Fatal ]] || \
-#           [[ "$line" =~ ^[[:space:]] ]]; then
-#            echo -e "$line"
-#        fi
     done
 }
 
@@ -97,6 +89,14 @@ else
     RACE_INFO=""
 fi
 
+if [[ -n "$TIME_FLAG" ]]; then
+    echo "时间检测: 启用"
+    TIME_INFO="（含时间检测）"
+else
+    echo "时间检测: 禁用"
+    TIME_INFO=""
+fi
+
 # 管理日志文件（清理旧的）
 manage_log_files
 
@@ -107,17 +107,17 @@ if ! mkfifo "$PIPE_FILE"; then
 fi
 
 echo "开始测试..."
-echo "=== 测试开始于: $(date) $RACE_INFO ===" >> "$LOG_FILE"
+echo "=== 测试开始于: $(date) $RACE_INFO $TIME_INFO ===" >> "$LOG_FILE"
 
 # 构建测试命令
-TEST_CMD="go test -run \"$TEST_PATTERN\" $RACE_FLAG"
+TEST_CMD="$TIME_FLAG go test -run \"$TEST_PATTERN\" $RACE_FLAG"
 
 echo "执行命令: $TEST_CMD"
 echo "执行命令: $TEST_CMD" >> "$LOG_FILE"
 
 # 运行测试
 {
-    eval go test -run "$TEST_PATTERN" $RACE_FLAG 2>&1 | tee -a "$LOG_FILE" | highlight_important > "$PIPE_FILE" &
+    eval $TIME_FLAG go test -run "$TEST_PATTERN" $RACE_FLAG 2>&1 | tee -a "$LOG_FILE" | highlight_important > "$PIPE_FILE" &
 } 2>/dev/null
 
 # 通过python处理实时输出

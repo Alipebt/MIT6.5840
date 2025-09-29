@@ -281,18 +281,20 @@ func (rf *Raft) chackPrevLog(prevIndex int, prevTerm int) bool {
 			}
 			Debug(dError, "S%v T%v delete logs because no commited", rf.me, rf.currentTerm)
 		}
-		Debug(dError, "S%v T%v <---failed to AppendEntries---", rf.me, rf.currentTerm)
+		Debug(dError, "S%v T%v <---failed to AppendEntries--- status1", rf.me, rf.currentTerm)
 	} else if len(rf.logs) == prevIndex {
 		if prevIndex != 0 {
 			if rf.logs[prevIndex].Term != prevTerm {
 				success = false
-				Debug(dError, "S%v T%v <---failed to AppendEntries---", rf.me, rf.currentTerm)
+				Debug(dCommit, "S%v T%v prevLog:%v argsPrevLogTerm:%v", rf.me, rf.currentTerm, rf.logs[prevIndex], prevTerm)
+				Debug(dError, "S%v T%v <---failed to AppendEntries--- status2", rf.me, rf.currentTerm)
 			}
+		} else {
+			Debug(dError, "S%v T%v <---AppendEntries--- status3", rf.me, rf.currentTerm)
 		}
-		Debug(dError, "S%v T%v <---AppendEntries---", rf.me, rf.currentTerm)
 	} else if len(rf.logs) < prevIndex {
 		// TODO
-		Debug(dError, "S%v T%v <---AppendEntries---", rf.me, rf.currentTerm)
+		Debug(dError, "S%v T%v <---AppendEntries--- status4", rf.me, rf.currentTerm)
 	}
 	return success
 }
@@ -313,15 +315,15 @@ func (rf *Raft) createAppendEntriesArgs() *AppendEntriesArgs {
 	args := &AppendEntriesArgs{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
-		PrevLogIndex: len(rf.logs) - 1,
+		PrevLogIndex: rf.lastApplied,
 
 		PrevLogTerm: 0,
 		Entries:     nil,
 
 		LeaderCommit: rf.commitIndex,
 	}
-	if len(rf.logs) > 0 {
-		args.PrevLogTerm = rf.logs[len(rf.logs)].Term
+	if rf.lastApplied > 0 {
+		args.PrevLogTerm = rf.logs[rf.lastApplied].Term
 	}
 	return args
 }
@@ -367,6 +369,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	entries[0] = entry
 
+	rf.lastApplied = len(rf.logs)
 	rf.addEntriesToLogs(entries)
 
 	Debug(dCommit, "S%v T%v new logs:%v", rf.me, rf.currentTerm, entry)
@@ -401,7 +404,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				if rf.nextIndex[server] > 0 {
 					rf.nextIndex[server]--
 				}
-				Debug(dLog, "S%v T%v ---unsuccess agree---> S%v", rf.me, rf.currentTerm, args.LeaderId)
+				Debug(dLog, "S%v T%v ---unsuccess agree---> S%v", rf.me, rf.currentTerm, server)
 			} else {
 				rf.nextIndex[server]++
 				agreement++
