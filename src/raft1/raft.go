@@ -222,26 +222,13 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if args.Term >= rf.currentTerm {
-		if rf.status == Leader {
-			Debug(dLeader, "S%v T%v <---heartbeat--- S%v, become Follower", rf.me, rf.currentTerm, args.LeaderId)
-		} else if args.Entries == nil {
-			Debug(dTimer, "S%v T%v <---heartbeat--- S%v", rf.me, rf.currentTerm, args.LeaderId)
-		}
-		rf.updateNodeWithNewTerm(args.Term)
-		rf.resetElectionTicker()
-	}
+
+	rf.handleHeartBeat(args)
+
 	reply.Term = rf.currentTerm
 
-	if args.LeaderCommit > rf.commitIndex {
-		if len(rf.logs) < args.LeaderCommit {
-			rf.commitIndex = len(rf.logs)
-		} else {
-			rf.commitIndex = args.LeaderCommit
-		}
-		Debug(dCommit, "S%v T%v Commit Command and Index:%v %v", rf.me, rf.currentTerm, rf.logs[rf.commitIndex].Command, rf.commitIndex)
-		applyMsg := rf.createApplyMsg()
-
+	applyMsg, ok := rf.createCommitMsg(args)
+	if ok {
 		rf.mu.Unlock()
 		rf.applyCh <- applyMsg
 		rf.mu.Lock()
@@ -253,35 +240,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// TODO: 3B
 	Debug(dCommit, "S%v T%v start handle command", rf.me, rf.currentTerm)
+	//Debug(dSnap, "S%v T%v len(rf.logs):%v PrevLogIndex:%v", rf.me, rf.currentTerm, len(rf.logs), args.PrevLogIndex)
 
-	success := true
-
-	Debug(dSnap, "S%v T%v len(rf.logs):%v PrevLogIndex:%v", rf.me, rf.currentTerm, len(rf.logs), args.PrevLogIndex)
-
-	if len(rf.logs) > args.PrevLogIndex {
-		success = false
-		if args.PrevLogIndex >= 0 {
-			i := args.PrevLogIndex
-			for i = range rf.logs {
-				delete(rf.logs, i)
-			}
-			Debug(dLog, "S%v T%v delete logs because no commited", rf.me, rf.currentTerm, args.LeaderId)
-		}
-		Debug(dError, "S%v T%v <---failed to AppendEntries--- %v  1", rf.me, rf.currentTerm, args.LeaderId)
-	} else if len(rf.logs) == args.PrevLogIndex {
-		if args.PrevLogIndex != 0 {
-			if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
-				success = false
-				Debug(dError, "S%v T%v <---failed to AppendEntries--- %v  2", rf.me, rf.currentTerm, args.LeaderId)
-			}
-		}
-	} else if len(rf.logs) < args.PrevLogIndex {
-		// TODO
-		Debug(dError, "S%v T%v <---AppendEntries--- %v  3", rf.me, rf.currentTerm, args.LeaderId)
-	}
-
+	success := rf.chackPrevLog(args.PrevLogIndex, args.PrevLogTerm)
 	if success == true {
-		rf.entriesToLogs(args.Entries)
+		rf.addEntriesToLogs(args.Entries)
 		Debug(dCommit, "S%v T%v new logs:%v", rf.me, rf.currentTerm, args.Entries)
 	}
 
@@ -290,13 +253,57 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 }
 
+func (rf *Raft) createCommitMsg(args *AppendEntriesArgs) (raftapi.ApplyMsg, bool) {
+	if args.LeaderCommit > rf.commitIndex {
+		if len(rf.logs) < args.LeaderCommit {
+			rf.commitIndex = len(rf.logs)
+		} else {
+			rf.commitIndex = args.LeaderCommit
+		}
+		Debug(dCommit, "S%v T%v Commit Command and Index:%v %v", rf.me, rf.currentTerm, rf.logs[rf.commitIndex].Command, rf.commitIndex)
+		applyMsg := rf.createApplyMsg()
+
+		return applyMsg, true
+	}
+	return raftapi.ApplyMsg{}, false
+}
+
+func (rf *Raft) chackPrevLog(prevIndex int, prevTerm int) bool {
+	success := true
+	if len(rf.logs) > prevIndex {
+		success = false
+		if prevIndex >= 0 {
+			index := prevIndex
+			for i := range rf.logs {
+				if i >= index {
+					delete(rf.logs, i)
+				}
+			}
+			Debug(dError, "S%v T%v delete logs because no commited", rf.me, rf.currentTerm)
+		}
+		Debug(dError, "S%v T%v <---failed to AppendEntries---", rf.me, rf.currentTerm)
+	} else if len(rf.logs) == prevIndex {
+		if prevIndex != 0 {
+			if rf.logs[prevIndex].Term != prevTerm {
+				success = false
+				Debug(dError, "S%v T%v <---failed to AppendEntries---", rf.me, rf.currentTerm)
+			}
+		}
+		Debug(dError, "S%v T%v <---AppendEntries---", rf.me, rf.currentTerm)
+	} else if len(rf.logs) < prevIndex {
+		// TODO
+		Debug(dError, "S%v T%v <---AppendEntries---", rf.me, rf.currentTerm)
+	}
+	return success
+}
+
 func (rf *Raft) GetStatus() Status {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	return rf.status
 }
 
-func (rf *Raft) entriesToLogs(entries map[int]Log) {
+func (rf *Raft) addEntriesToLogs(entries map[int]Log) {
 	for _, item := range entries {
 		rf.logs[len(rf.logs)+1] = item
 	}
@@ -361,7 +368,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	entries[0] = entry
 
-	rf.entriesToLogs(entries)
+	rf.addEntriesToLogs(entries)
 
 	Debug(dCommit, "S%v T%v new logs:%v", rf.me, rf.currentTerm, entry)
 
@@ -563,6 +570,18 @@ func (rf *Raft) HeartBeat() {
 
 		}(i)
 
+	}
+}
+
+func (rf *Raft) handleHeartBeat(args *AppendEntriesArgs) {
+	if args.Term >= rf.currentTerm {
+		if rf.status == Leader {
+			Debug(dLeader, "S%v T%v <---heartbeat--- S%v, become Follower", rf.me, rf.currentTerm, args.LeaderId)
+		} else if args.Entries == nil {
+			Debug(dTimer, "S%v T%v <---heartbeat--- S%v", rf.me, rf.currentTerm, args.LeaderId)
+		}
+		rf.updateNodeWithNewTerm(args.Term)
+		rf.resetElectionTicker()
 	}
 }
 
