@@ -152,6 +152,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	rf.resetElectionTicker()
+
 	if args.Term < rf.currentTerm || args.Term == rf.currentTerm && rf.votedFor != -1 {
 		// term is lower than mine, or the same term but already voted return false
 		reply.VoteGranted = false
@@ -223,6 +225,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	rf.resetElectionTicker()
+
 	rf.handleHeartBeat(args)
 
 	reply.Term = rf.currentTerm
@@ -240,7 +244,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// TODO: 3B
 	Debug(dCommit, "S%v T%v start handle command", rf.me, rf.currentTerm)
-	//Debug(dSnap, "S%v T%v len(rf.logs):%v PrevLogIndex:%v", rf.me, rf.currentTerm, len(rf.logs), args.PrevLogIndex)
 
 	success := rf.chackPrevLog(args.PrevLogIndex, args.PrevLogTerm)
 	if success == true {
@@ -249,7 +252,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	reply.Success = success
-	//Debug(dTrace, "S%v T%v Log:%v", rf.me, rf.currentTerm, rf.logs)
 
 }
 
@@ -381,11 +383,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			continue
 		}
 
-		rf.wg.Add(1)
 		go func(server int) {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
-			defer rf.wg.Done()
 
 			args := rf.createAppendEntriesArgs()
 			args.Entries = entries
@@ -426,9 +426,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 		}(i)
 	}
-	rf.mu.Unlock()
-	rf.wg.Wait()
-	rf.mu.Lock()
 	return len(rf.logs), term, isLeader
 }
 
@@ -595,7 +592,7 @@ func (rf *Raft) updateNodeWithNewTerm(term int) {
 
 // resetElectionTicker set a random time to ticker
 func (rf *Raft) resetElectionTicker() {
-	ms := 500 + (rand.Int63() % 500)
+	ms := 150 + (rand.Int63() % 150)
 	if rf.electionTicker == nil {
 		rf.electionTicker = time.NewTicker(time.Duration(ms) * time.Millisecond)
 	} else {
@@ -663,3 +660,5 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	return rf
 }
+
+// TODO: runtime too lang !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
