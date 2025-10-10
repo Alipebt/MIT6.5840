@@ -154,12 +154,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	rf.resetElectionTicker()
 
+	reply.VoteGranted = false
+
+	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) || args.Term > rf.currentTerm {
+		// not voted or higher term, return true
+		reply.VoteGranted = true
+	}
+
 	if args.Term < rf.currentTerm || args.Term == rf.currentTerm && rf.votedFor != -1 {
 		// term is lower than mine, or the same term but already voted return false
 		reply.VoteGranted = false
-	} else if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) || args.Term > rf.currentTerm {
-		// not voted or higher term, return true
-		reply.VoteGranted = true
 	}
 
 	if args.LastLogTerm > rf.logs[len(rf.logs)].Term {
@@ -239,27 +243,26 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Term = rf.currentTerm
 
+	success := false
+	if args.Entries != nil {
+		success = rf.chackPrevLog(args)
+		if success == true {
+			rf.addEntriesToLogs(args.Entries)
+			Debug(dCommit, "S%v T%v new logs:%v", rf.me, rf.currentTerm, args.Entries)
+		}
+	}
+
 	applyMsg, ok := rf.createCommitMsg(args)
 	if ok {
-		rf.mu.Unlock()
 		Debug(dError, "S%v T%v Send Msg:%v", rf.me, rf.currentTerm, applyMsg)
+		rf.mu.Unlock()
 		rf.applyCh <- applyMsg
 		rf.mu.Lock()
 	}
 
-	if args.Entries == nil {
-		return
-	}
+	//Debug(dCommit, "S%v T%v start handle command", rf.me, rf.currentTerm)
 
-	Debug(dCommit, "S%v T%v start handle command", rf.me, rf.currentTerm)
-
-	success := rf.chackPrevLog(args.PrevLogIndex, args.PrevLogTerm)
-	if success == true {
-		rf.addEntriesToLogs(args.Entries)
-		Debug(dCommit, "S%v T%v new logs:%v", rf.me, rf.currentTerm, args.Entries)
-		Debug(dError, "S%v T%v and now logs:%v", rf.me, rf.currentTerm, rf.logs)
-	}
-
+	Debug(dError, "S%v T%v now logs:%v", rf.me, rf.currentTerm, rf.logs)
 	reply.Success = success
 
 }
@@ -269,36 +272,66 @@ func (rf *Raft) createCommitMsg(args *AppendEntriesArgs) (raftapi.ApplyMsg, bool
 		if rf.commitIndex < len(rf.logs) && rf.commitIndex < args.LeaderCommit {
 			Debug(dLeader, "S%v T%v rf.commitIndex++:%v", rf.me, rf.currentTerm, rf.commitIndex+1)
 			rf.commitIndex++
+
+			applyMsg := rf.createApplyMsg()
+
+			Debug(dCommit, "S%v T%v Commit Command and Index:%v %v", rf.me, rf.currentTerm, rf.logs[rf.commitIndex].Command, rf.commitIndex)
+
+			return applyMsg, true
 		}
-		applyMsg := rf.createApplyMsg()
 
-		Debug(dCommit, "S%v T%v Commit Command and Index:%v %v", rf.me, rf.currentTerm, rf.logs[rf.commitIndex].Command, rf.commitIndex)
-
-		return applyMsg, true
 	}
-	Debug(dLeader, "S%v T%v ##############", rf.me, rf.currentTerm)
 	return raftapi.ApplyMsg{}, false
 }
 
-func (rf *Raft) chackPrevLog(prevIndex int, prevTerm int) bool {
+func (rf *Raft) chackPrevLog(args *AppendEntriesArgs) bool {
 	isSuccess := true
+	prevIndex := args.PrevLogIndex
+	prevTerm := args.PrevLogTerm
+	Debug(dError, "S%v T%v len:%v prevIndex:%v", rf.me, rf.currentTerm, len(rf.logs), prevIndex)
 	if len(rf.logs) > prevIndex {
-		isSuccess = false
-		Debug(dError, "S%v T%v <---failed to AppendEntries--- status1", rf.me, rf.currentTerm)
-	} else if len(rf.logs) == prevIndex {
+		// 本地日志比一致性（Leader）日志长，即未受到大部分节点统一
+		//isSuccess = false
+
+		// 不能sortMap。
+		//for index, _ := range rf.logs {
+		//	Debug(dError, "S%v T%v index:%v prevIndex:%v", rf.me, rf.currentTerm, index, prevIndex)
+		//
+		//	if index > prevIndex {
+		//		Debug(dError, "S%v T%v delete log:%v", rf.me, rf.currentTerm, rf.logs[index])
+		//		delete(rf.logs, index)
+		//	}
+		//}
+
+		for _, key := range sortMap(rf.logs) {
+			Debug(dError, "S%v T%v key:%v prevIndex:%v rf.commitIndex:%v", rf.me, rf.currentTerm, key, prevIndex, rf.commitIndex)
+			if key > prevIndex {
+				Debug(dError, "S%v T%v delete log:%v", rf.me, rf.currentTerm, rf.logs[len(rf.logs)])
+				delete(rf.logs, len(rf.logs))
+				isSuccess = false
+			}
+		}
+
+	}
+	if len(rf.logs) == prevIndex {
+		Debug(dInfo, "S%v T%v prevIndex:%v ", rf.me, rf.currentTerm, prevIndex)
 		if prevIndex != 0 {
 			if rf.logs[prevIndex].Term != prevTerm {
 				isSuccess = false
 				Debug(dCommit, "S%v T%v prevLog:%v argsPrevLogTerm:%v", rf.me, rf.currentTerm, rf.logs[prevIndex], prevTerm)
 				Debug(dError, "S%v T%v <---failed to AppendEntries--- status2", rf.me, rf.currentTerm)
+			} else {
+				isSuccess = true
 			}
 		} else {
+			isSuccess = true
 			Debug(dLog, "S%v T%v <---AppendEntries--- status3", rf.me, rf.currentTerm)
 		}
 	} else if len(rf.logs) < prevIndex {
 		Debug(dLog, "S%v T%v <---failed to AppendEntries--- status4", rf.me, rf.currentTerm)
 		isSuccess = false
 	}
+	Debug(dInfo, "S%v T%v isSuccess:%v ", rf.me, rf.currentTerm, isSuccess)
 	return isSuccess
 }
 
@@ -328,8 +361,8 @@ func (rf *Raft) createAppendEntriesArgs(entries map[int]Log, peer int) *AppendEn
 
 		LeaderCommit: rf.commitIndex,
 	}
-	if rf.lastApplied > 0 {
-		args.PrevLogTerm = rf.logs[rf.lastApplied].Term
+	if args.PrevLogIndex > 0 {
+		args.PrevLogTerm = rf.logs[args.PrevLogIndex].Term
 	}
 	return args
 }
@@ -392,14 +425,17 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				entries := make(map[int]Log)
 
 				for _, key := range sortMap(rf.logs) {
-					Debug(dTimer, "S%v TN  key:%v", server, key)
 					if key > rf.nextIndex[server] {
 						entries[key] = rf.logs[key]
 					}
 				}
+				if entries == nil {
+					return
+				}
 				Debug(dTimer, "S%v TN <--send entries:%v", server, entries)
 
 				args := rf.createAppendEntriesArgs(entries, server)
+				Debug(dTimer, "S%v TN args.PrevLogIndex:%v", server, args.PrevLogIndex)
 
 				reply := &AppendEntriesReply{}
 
@@ -411,6 +447,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					Debug(dTimer, "S%v T%v ---AppendEntries---> S%v failed", rf.me, rf.currentTerm, server)
 					return
 				}
+				// 收到回复后才能更改nextIndex
 				if !reply.Success {
 					if rf.nextIndex[server] > 0 {
 						rf.nextIndex[server]--
@@ -418,9 +455,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					Debug(dLog, "S%v T%v ---unsuccess agree---> S%v", rf.me, rf.currentTerm, server)
 					continue
 				} else {
-					rf.nextIndex[server]++
+					//rf.nextIndex[server] = rf.nextIndex[server] + len(entries)
+					rf.nextIndex[server] = len(rf.logs)
 					agreement++
-					Debug(dLog, "S%v T%v nextIndex in S%v = %v", rf.me, rf.currentTerm, server, rf.nextIndex[server])
+					Debug(dLog, "S%v T%v nextIndex in S%v = %v", server, rf.currentTerm, rf.me, rf.nextIndex[server])
 				}
 
 				if agreement > len(rf.peers)/2 && !isCommited {
@@ -521,7 +559,7 @@ func (rf *Raft) Election() {
 			defer rf.mu.Unlock()
 
 			reply := &RequestVoteReply{}
-			Debug(dVote, "S%v T%v ---RequestVote---> S%v", rf.me, rf.currentTerm, server)
+			//Debug(dVote, "S%v T%v ---RequestVote---> S%v", rf.me, rf.currentTerm, server)
 
 			rf.mu.Unlock()
 			ok := rf.sendRequestVote(server, args, reply)
@@ -573,7 +611,7 @@ func (rf *Raft) HeartBeat() {
 			rf.mu.Lock()
 
 			if !ok {
-				Debug(dTimer, "S%v T%v ---HeartBeat---> S%v failed", rf.me, rf.currentTerm, server)
+				//Debug(dTimer, "S%v T%v ---HeartBeat---> S%v failed", rf.me, rf.currentTerm, server)
 				return
 			}
 			if reply.Term > rf.currentTerm {
@@ -591,7 +629,7 @@ func (rf *Raft) handleHeartBeat(args *AppendEntriesArgs) {
 		if rf.status == Leader {
 			Debug(dLeader, "S%v T%v <---heartbeat--- S%v, become Follower", rf.me, rf.currentTerm, args.LeaderId)
 		} else if args.Entries == nil {
-			Debug(dTimer, "S%v T%v <---heartbeat--- S%v", rf.me, rf.currentTerm, args.LeaderId)
+			//Debug(dTimer, "S%v T%v <---heartbeat--- S%v", rf.me, rf.currentTerm, args.LeaderId)
 		}
 		rf.updateNodeWithNewTerm(args.Term)
 		rf.resetElectionTicker()
@@ -629,13 +667,14 @@ func (rf *Raft) initLeader() {
 	rf.status = Leader
 	for i, _ := range rf.peers {
 		rf.nextIndex[i] = len(rf.logs)
+		Debug(dError, "S%v T%v Init nextindex:%v S%v", rf.me, rf.currentTerm, rf.nextIndex[i], i)
 		rf.matchIndex[i] = 0
 	}
 	for rf.commitIndex < len(rf.logs) {
 		rf.commitIndex++
 		applyMsg := rf.createApplyMsg()
-		rf.mu.Unlock()
 		Debug(dError, "S%v T%v Init Send Msg:%v", rf.me, rf.currentTerm, applyMsg)
+		rf.mu.Unlock()
 		rf.applyCh <- applyMsg
 		rf.mu.Lock()
 	}
