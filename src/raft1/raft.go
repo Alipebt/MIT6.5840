@@ -165,12 +165,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 	}
 
-	Debug(dVote, "S%v T%v LastLogTerm:%v rf.getLog(-1).Term:%v", rf.me, rf.currentTerm, args.LastLogTerm, rf.getLog(-1).Term)
-
 	if args.LastLogTerm > rf.getLog(-1).Term {
-
 	} else if args.LastLogTerm == rf.getLog(-1).Term && args.LastLogIndex >= len(rf.logs) {
-		Debug(dVote, "S%v T%v ***************", rf.me, rf.currentTerm)
 	} else {
 		reply.VoteGranted = false
 	}
@@ -246,84 +242,55 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Term = rf.currentTerm
 
-	success := false
-	if args.Entries != nil {
-		success = rf.chackPrevLog(args)
-		if success == true {
-			rf.addEntriesToLogs(args.Entries)
-			//Debug(dCommit, "S%v T%v new logs:%v", rf.me, rf.currentTerm, args.Entries)
-		}
-	}
-
-	applyMsg, ok := rf.createCommitMsg(args)
-	if ok {
-		//Debug(dError, "S%v T%v Send Msg:%v", rf.me, rf.currentTerm, applyMsg)
-		rf.mu.Unlock()
-		rf.applyCh <- applyMsg
-		rf.mu.Lock()
-	}
-
 	//Debug(dCommit, "S%v T%v start handle command", rf.me, rf.currentTerm)
 
 	//Debug(dError, "S%v T%v now logs:%v", rf.me, rf.currentTerm, rf.logs)
-	reply.Success = success
+	reply.Success = rf.chackPrevLog(args)
 
-}
-
-func (rf *Raft) createCommitMsg(args *AppendEntriesArgs) (raftapi.ApplyMsg, bool) {
-	if args.LeaderCommit > rf.commitIndex {
-		if rf.commitIndex < len(rf.logs) && rf.commitIndex < args.LeaderCommit {
-			Debug(dLeader, "S%v T%v rf.commitIndex++:%v", rf.me, rf.currentTerm, rf.commitIndex+1)
-			rf.commitIndex++
-
-			applyMsg := rf.createApplyMsg()
-
-			Debug(dCommit, "S%v T%v Commit Command and Index:%v %v", rf.me, rf.currentTerm, rf.getLog(rf.commitIndex-1).Command, rf.commitIndex)
-
-			return applyMsg, true
-		}
-
-	}
-	return raftapi.ApplyMsg{}, false
 }
 
 func (rf *Raft) chackPrevLog(args *AppendEntriesArgs) bool {
 	isSuccess := true
 	prevIndex := args.PrevLogIndex
 	prevTerm := args.PrevLogTerm
-	Debug(dError, "S%v T%v len:%v prevIndex:%v", rf.me, rf.currentTerm, len(rf.logs), prevIndex)
-	if len(rf.logs) > prevIndex {
-		// 本地日志比一致性（Leader）日志长，即未受到大部分节点统一
-		// 不能sortMap。
-
-		//for _, key := range sortMap(rf.logs) {
-		//	Debug(dError, "S%v T%v key:%v prevIndex:%v rf.commitIndex:%v", rf.me, rf.currentTerm, key, prevIndex, rf.commitIndex)
-		//	if key > prevIndex {
-		//		Debug(dError, "S%v T%v delete log:%v", rf.me, rf.currentTerm, rf.logs[len(rf.logs)])
-		//		delete(rf.logs, len(rf.logs))
-		//		isSuccess = false
-		//	}
-		//}
-
-		rf.logs = rf.logs[:prevIndex]
-	}
-	if len(rf.logs) == prevIndex {
-		Debug(dInfo, "S%v T%v prevIndex:%v rf.getLog(prevIndex).Term:%v prevTerm:%v", rf.me, rf.currentTerm, prevIndex, rf.getLog(prevIndex).Term, prevTerm)
-		if prevIndex != 0 {
-			if rf.getLog(prevIndex).Term != prevTerm {
-				isSuccess = false
-				//Debug(dCommit, "S%v T%v prevLog:%v argsPrevLogTerm:%v", rf.me, rf.currentTerm, rf.getLog(prevIndex), prevTerm)
-				Debug(dError, "S%v T%v <---failed to AppendEntries--- status2", rf.me, rf.currentTerm)
-			} else {
-				isSuccess = true
-			}
-		} else {
-			isSuccess = true
-			Debug(dLog, "S%v T%v <---AppendEntries--- status3", rf.me, rf.currentTerm)
-		}
-	} else if len(rf.logs) < prevIndex {
-		Debug(dLog, "S%v T%v <---failed to AppendEntries--- status4", rf.me, rf.currentTerm)
+	//Debug(dError, "S%v T%v len:%v prevIndex:%v", rf.me, rf.currentTerm, len(rf.logs), prevIndex)
+	//if len(rf.logs) > prevIndex {
+	//	Debug(dInfo, "S%v T%v delete:%v", rf.me, rf.currentTerm, rf.logs[prevIndex+1:])
+	//
+	//	rf.logs = rf.logs[:prevIndex]
+	//}
+	//if len(rf.logs) == prevIndex {
+	//	Debug(dInfo, "S%v T%v prevIndex:%v rf.getLog(prevIndex).Term:%v prevTerm:%v", rf.me, rf.currentTerm, prevIndex, rf.getLog(prevIndex).Term, prevTerm)
+	//	if prevIndex != 0 {
+	//		if rf.getLog(prevIndex).Term != prevTerm {
+	//			isSuccess = false
+	//			//Debug(dCommit, "S%v T%v prevLog:%v argsPrevLogTerm:%v", rf.me, rf.currentTerm, rf.getLog(prevIndex), prevTerm)
+	//			Debug(dError, "S%v T%v <---failed to AppendEntries--- status2", rf.me, rf.currentTerm)
+	//		} else {
+	//			isSuccess = true
+	//		}
+	//	} else {
+	//		isSuccess = true
+	//		Debug(dLog, "S%v T%v <---AppendEntries--- status3", rf.me, rf.currentTerm)
+	//	}
+	//} else if len(rf.logs) < prevIndex {
+	//	Debug(dLog, "S%v T%v <---failed to AppendEntries--- status4", rf.me, rf.currentTerm)
+	//	isSuccess = false
+	//}
+	if args.Term < rf.currentTerm {
 		isSuccess = false
+		return isSuccess
+	} else if rf.getLog(prevIndex).Term == prevTerm {
+		rf.logs = rf.logs[:prevIndex]
+		rf.logs = append(rf.logs, args.Entries...)
+		isSuccess = true
+	} else {
+		isSuccess = false
+		return isSuccess
+	}
+
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = min(args.LeaderCommit, len(rf.logs))
 	}
 	Debug(dInfo, "S%v T%v isSuccess:%v ", rf.me, rf.currentTerm, isSuccess)
 	return isSuccess
@@ -335,14 +302,6 @@ func (rf *Raft) GetStatus() Status {
 	return rf.status
 }
 
-func (rf *Raft) addEntriesToLogs(entries []Log) {
-	//for _, key := range sortMap(entries) {
-	//	rf.lastApplied = len(rf.logs)
-	//	rf.logs[len(rf.logs)+1] = entries[key]
-	//}
-	rf.logs = append(rf.logs, entries...)
-}
-
 func (rf *Raft) createAppendEntriesArgs(entries []Log, peer int) *AppendEntriesArgs {
 
 	args := &AppendEntriesArgs{
@@ -351,13 +310,10 @@ func (rf *Raft) createAppendEntriesArgs(entries []Log, peer int) *AppendEntriesA
 
 		PrevLogIndex: rf.nextIndex[peer],
 
-		PrevLogTerm: 0,
+		PrevLogTerm: rf.getLog(rf.nextIndex[peer]).Term,
 		Entries:     entries,
 
 		LeaderCommit: rf.commitIndex,
-	}
-	if args.PrevLogIndex > 0 {
-		args.PrevLogTerm = rf.getLog(args.PrevLogIndex).Term
 	}
 	return args
 }
@@ -365,8 +321,8 @@ func (rf *Raft) createAppendEntriesArgs(entries []Log, peer int) *AppendEntriesA
 func (rf *Raft) createApplyMsg() raftapi.ApplyMsg {
 	applyMsg := raftapi.ApplyMsg{
 		CommandValid: true,
-		Command:      rf.getLog(rf.commitIndex - 1).Command,
-		CommandIndex: rf.commitIndex,
+		Command:      rf.getLog(rf.lastApplied).Command,
+		CommandIndex: rf.lastApplied,
 	}
 	return applyMsg
 }
@@ -395,16 +351,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	agreement := 0
 	isCommited := false
-	items := make([]Log, 0)
+
 	entry := Log{
 		Command: command,
 		Term:    rf.currentTerm,
 	}
-	items = append(items, entry)
 
-	rf.addEntriesToLogs(items)
+	rf.logs = append(rf.logs, entry)
 
-	//Debug(dCommit, "S%v T%v new logs:%v", rf.me, rf.currentTerm, entry)
+	Debug(dCommit, "S%v T%v new logs:%v", rf.me, rf.currentTerm, entry)
 
 	for i, _ := range rf.peers {
 
@@ -419,17 +374,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			for {
 				entries := make([]Log, 0)
 
-				//for _, key := range sortMap(rf.logs) {
-				//	if key > rf.nextIndex[server] {
-				//		entries[key] = rf.logs[key]
-				//	}
-				//}
-
 				entries = append(entries, rf.logs[rf.nextIndex[server]:]...)
 				if entries == nil {
 					return
 				}
-				//Debug(dTimer, "S%v TN <--send entries:%v", server, entries)
+				Debug(dTimer, "S%v TN <--send entries:%v", server, entries)
 
 				args := rf.createAppendEntriesArgs(entries, server)
 				Debug(dTimer, "S%v TN args.PrevLogIndex:%v", server, args.PrevLogIndex)
@@ -461,14 +410,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				if agreement > len(rf.peers)/2 && !isCommited {
 					isCommited = true
 					rf.commitIndex++
-					Debug(dClient, "S%v T%v Success commit commend and Index:%v %v",
-						rf.me, rf.currentTerm, rf.getLog(rf.commitIndex).Term, rf.commitIndex)
-					// call commit
-					applyMsg := rf.createApplyMsg()
-
-					rf.mu.Unlock()
-					rf.applyCh <- applyMsg
-					rf.mu.Lock()
+					Debug(dClient, "S%v T%v Success commit Index:%v ", rf.me, rf.currentTerm, rf.commitIndex)
 				}
 				break
 			}
@@ -530,14 +472,18 @@ func (rf *Raft) ticker() {
 func (rf *Raft) getLog(index int) Log {
 	log := Log{
 		Command: nil,
-		Term:    -1,
+		Term:    0,
 	}
 	if len(rf.logs) != 0 {
 		Debug(dCommit, "S%v T%v index:%v len(rf.logs):%v", rf.me, rf.currentTerm, index, len(rf.logs))
-		if index < len(rf.logs) && index != -1 {
+		if index > 0 && index <= len(rf.logs) {
+			// 0 ~ len(rf.logs)-1
+			// 1 ~ len(rf.logs)
+			index = index - 1
 			log = rf.logs[index]
-		} else if index == -1 {
-			log = rf.logs[len(rf.logs)-1]
+		} else if index < 0 && len(rf.logs)+index >= 0 {
+			index = len(rf.logs) + index
+			log = rf.logs[index]
 		}
 	}
 	return log
@@ -560,7 +506,7 @@ func (rf *Raft) Election() {
 		LastLogTerm:  rf.getLog(-1).Term,
 	}
 
-	Debug(dInfo, "S%v T%v Election rf.logs[len(rf.logs)].Term:%v", rf.me, rf.currentTerm, args.LastLogTerm)
+	Debug(dInfo, "S%v T%v Election", rf.me, rf.currentTerm)
 	for i, _ := range rf.peers {
 		if i == rf.me {
 			rf.votedFor = rf.me
@@ -600,6 +546,26 @@ func (rf *Raft) Election() {
 			}
 
 		}(i)
+	}
+}
+
+func (rf *Raft) commiter() {
+	for {
+		time.Sleep(50 * time.Millisecond)
+
+		rf.mu.Lock()
+		if rf.lastApplied < rf.commitIndex {
+			rf.lastApplied++
+
+			applyMsg := rf.createApplyMsg()
+
+			Debug(dClient, "S%v T%v Commit:%v", rf.me, rf.currentTerm, applyMsg)
+
+			rf.mu.Unlock()
+			rf.applyCh <- applyMsg
+			rf.mu.Lock()
+		}
+		rf.mu.Unlock()
 	}
 }
 
@@ -678,33 +644,11 @@ func (rf *Raft) resetHeartBeatTicker() {
 // initLeader change node`s status to leader and refresh volatile data or init it
 func (rf *Raft) initLeader() {
 	rf.status = Leader
-	for i, _ := range rf.peers {
-		//rf.nextIndex[i] = len(rf.logs)
+	for range rf.peers {
 		rf.nextIndex = append(rf.nextIndex, len(rf.logs))
-		Debug(dError, "S%v T%v Init nextindex:%v S%v", rf.me, rf.currentTerm, rf.nextIndex[i], i)
-		//rf.matchIndex[i] = 0
 		rf.matchIndex = append(rf.matchIndex, 0)
 	}
-	for rf.commitIndex < len(rf.logs) {
-		rf.commitIndex++
-		applyMsg := rf.createApplyMsg()
-		//Debug(dError, "S%v T%v Init Send Msg:%v", rf.me, rf.currentTerm, applyMsg)
-		rf.mu.Unlock()
-		rf.applyCh <- applyMsg
-		rf.mu.Lock()
-	}
 }
-
-//func sortMap(m map[int]Log) []int {
-//	keys := make([]int, 0, len(m))
-//	for k := range m {
-//		keys = append(keys, k)
-//	}
-//
-//	// 对 key 进行排序
-//	sort.Ints(keys)
-//	return keys
-//}
 
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -728,7 +672,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		votedFor:    -1,
 		logs:        make([]Log, 0),
 		commitIndex: 0,
-		lastApplied: -1,
+		lastApplied: 0,
 		nextIndex:   make([]int, 0),
 		matchIndex:  make([]int, 0),
 		applyCh:     applyCh,
@@ -743,7 +687,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
-	//go rf.commiter()
+	go rf.commiter()
 
 	return rf
 }
