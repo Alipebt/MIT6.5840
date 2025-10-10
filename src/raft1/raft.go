@@ -244,8 +244,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	//Debug(dCommit, "S%v T%v start handle command", rf.me, rf.currentTerm)
 
-	//Debug(dError, "S%v T%v now logs:%v", rf.me, rf.currentTerm, rf.logs)
 	reply.Success = rf.chackPrevLog(args)
+	Debug(dError, "S%v T%v now logs:%v", rf.me, rf.currentTerm, rf.logs)
 
 }
 
@@ -279,13 +279,17 @@ func (rf *Raft) chackPrevLog(args *AppendEntriesArgs) bool {
 	//}
 	if args.Term < rf.currentTerm {
 		isSuccess = false
+		Debug(dInfo, "S%v T%v !!!isSuccess:%v ", rf.me, rf.currentTerm, isSuccess)
 		return isSuccess
 	} else if rf.getLog(prevIndex).Term == prevTerm {
-		rf.logs = rf.logs[:prevIndex]
-		rf.logs = append(rf.logs, args.Entries...)
+		if args.Entries != nil {
+			rf.logs = rf.logs[:prevIndex]
+			rf.logs = append(rf.logs, args.Entries...)
+		}
 		isSuccess = true
 	} else {
 		isSuccess = false
+		Debug(dInfo, "S%v T%v @@@isSuccess:%v ", rf.me, rf.currentTerm, isSuccess)
 		return isSuccess
 	}
 
