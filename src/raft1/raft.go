@@ -245,7 +245,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//Debug(dCommit, "S%v T%v start handle command", rf.me, rf.currentTerm)
 
 	reply.Success = rf.chackPrevLog(args)
-	Debug(dError, "S%v T%v now logs:%v", rf.me, rf.currentTerm, rf.logs)
+	Debug(dError, "S%v T%v new logs:%v", rf.me, rf.currentTerm, rf.logs)
+
+	rf.commitMsg()
 
 }
 
@@ -253,30 +255,7 @@ func (rf *Raft) chackPrevLog(args *AppendEntriesArgs) bool {
 	isSuccess := true
 	prevIndex := args.PrevLogIndex
 	prevTerm := args.PrevLogTerm
-	//Debug(dError, "S%v T%v len:%v prevIndex:%v", rf.me, rf.currentTerm, len(rf.logs), prevIndex)
-	//if len(rf.logs) > prevIndex {
-	//	Debug(dInfo, "S%v T%v delete:%v", rf.me, rf.currentTerm, rf.logs[prevIndex+1:])
-	//
-	//	rf.logs = rf.logs[:prevIndex]
-	//}
-	//if len(rf.logs) == prevIndex {
-	//	Debug(dInfo, "S%v T%v prevIndex:%v rf.getLog(prevIndex).Term:%v prevTerm:%v", rf.me, rf.currentTerm, prevIndex, rf.getLog(prevIndex).Term, prevTerm)
-	//	if prevIndex != 0 {
-	//		if rf.getLog(prevIndex).Term != prevTerm {
-	//			isSuccess = false
-	//			//Debug(dCommit, "S%v T%v prevLog:%v argsPrevLogTerm:%v", rf.me, rf.currentTerm, rf.getLog(prevIndex), prevTerm)
-	//			Debug(dError, "S%v T%v <---failed to AppendEntries--- status2", rf.me, rf.currentTerm)
-	//		} else {
-	//			isSuccess = true
-	//		}
-	//	} else {
-	//		isSuccess = true
-	//		Debug(dLog, "S%v T%v <---AppendEntries--- status3", rf.me, rf.currentTerm)
-	//	}
-	//} else if len(rf.logs) < prevIndex {
-	//	Debug(dLog, "S%v T%v <---failed to AppendEntries--- status4", rf.me, rf.currentTerm)
-	//	isSuccess = false
-	//}
+
 	if args.Term < rf.currentTerm {
 		isSuccess = false
 		Debug(dInfo, "S%v T%v !!!isSuccess:%v ", rf.me, rf.currentTerm, isSuccess)
@@ -383,6 +362,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					return
 				}
 				Debug(dTimer, "S%v TN <--send entries:%v", server, entries)
+				//Debug(dTimer, "S%v TN <--send entries", server)
 
 				args := rf.createAppendEntriesArgs(entries, server)
 				Debug(dTimer, "S%v TN args.PrevLogIndex:%v", server, args.PrevLogIndex)
@@ -553,23 +533,18 @@ func (rf *Raft) Election() {
 	}
 }
 
-func (rf *Raft) commiter() {
-	for {
-		time.Sleep(50 * time.Millisecond)
+func (rf *Raft) commitMsg() {
+	if rf.lastApplied < rf.commitIndex {
+		rf.lastApplied++
 
-		rf.mu.Lock()
-		if rf.lastApplied < rf.commitIndex {
-			rf.lastApplied++
+		applyMsg := rf.createApplyMsg()
 
-			applyMsg := rf.createApplyMsg()
+		//Debug(dClient, "S%v T%v Commit:%v", rf.me, rf.currentTerm, applyMsg)
+		Debug(dClient, "S%v T%v Commit:%v", rf.me, rf.currentTerm, rf.lastApplied)
 
-			Debug(dClient, "S%v T%v Commit:%v", rf.me, rf.currentTerm, applyMsg)
-
-			rf.mu.Unlock()
-			rf.applyCh <- applyMsg
-			rf.mu.Lock()
-		}
 		rf.mu.Unlock()
+		rf.applyCh <- applyMsg
+		rf.mu.Lock()
 	}
 }
 
@@ -603,8 +578,10 @@ func (rf *Raft) HeartBeat() {
 			}
 
 		}(i)
-
 	}
+
+	rf.commitMsg()
+
 }
 
 func (rf *Raft) handleHeartBeat(args *AppendEntriesArgs) {
@@ -691,7 +668,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
-	go rf.commiter()
+	//go rf.commiter()
 
 	return rf
 }
