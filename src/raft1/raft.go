@@ -266,6 +266,7 @@ func (rf *Raft) chackPrevLog(args *AppendEntriesArgs) bool {
 			rf.logs = append(rf.logs, args.Entries...)
 		}
 		isSuccess = true
+		Debug(dInfo, "S%v T%v log append:%v ", rf.me, rf.currentTerm, args.Entries)
 	} else {
 		isSuccess = false
 		Debug(dInfo, "S%v T%v @@@isSuccess:%v ", rf.me, rf.currentTerm, isSuccess)
@@ -393,7 +394,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 				if agreement > len(rf.peers)/2 && !isCommited {
 					isCommited = true
-					rf.commitIndex++
+					rf.commitIndex += len(entries)
 					Debug(dClient, "S%v T%v Success commit Index:%v ", rf.me, rf.currentTerm, rf.commitIndex)
 				}
 				break
