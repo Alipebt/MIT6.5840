@@ -8,6 +8,7 @@ package raft
 
 import (
 	"math/rand"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -166,17 +167,19 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if args.LastLogTerm > rf.getLog(-1).Term {
+		reply.VoteGranted = true
 	} else if args.LastLogTerm == rf.getLog(-1).Term && args.LastLogIndex >= len(rf.logs) {
+		reply.VoteGranted = true
 	} else {
 		reply.VoteGranted = false
 	}
+
 	if reply.VoteGranted == true {
 		rf.updateNodeWithNewTerm(args.Term)
 		rf.votedFor = args.CandidateId
 		Debug(dVote, "S%v T%v ---Vote---> S%v", rf.me, rf.currentTerm, args.CandidateId)
 	} else {
 		Debug(dVote, "S%v T%v ---Vote---> S%v refused", rf.me, rf.currentTerm, args.CandidateId)
-
 	}
 	// reply this node`s term
 	reply.Term = rf.currentTerm
@@ -232,48 +235,72 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+
+	XTerm  int
+	XIndex int
+	XLen   int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	rf.handleHeartBeat(args)
+	if rf.status == Leader {
+		return
+	}
 
+	rf.handleHeartBeat(args)
 	reply.Term = rf.currentTerm
 
-	//Debug(dCommit, "S%v T%v start handle command", rf.me, rf.currentTerm)
+	reply.Success = rf.handleAppendLog(args, reply)
 
-	reply.Success = rf.chackPrevLog(args)
-	Debug(dError, "S%v T%v new logs:%v", rf.me, rf.currentTerm, rf.logs)
-
+	Debug(dError, "S%v T%v reply:%v to:%v", rf.me, rf.currentTerm, reply, args.LeaderId)
+	Debug(dError, "S%v T%v now logs:%v", rf.me, rf.currentTerm, len(rf.logs))
+	Debug(dClient, "S%v T%v commitIndex:%v", rf.me, rf.currentTerm, rf.commitIndex)
 	rf.commitMsg()
 
 }
 
-func (rf *Raft) chackPrevLog(args *AppendEntriesArgs) bool {
+// TODO
+func (rf *Raft) handleAppendLog(args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	//TODO
+	// 默认false时 B2 无法通过
+	// 默认true时 B6 偶然报错
+
 	isSuccess := true
 	prevIndex := args.PrevLogIndex
 	prevTerm := args.PrevLogTerm
 
-	if args.Term < rf.currentTerm {
+	if args.Term < rf.currentTerm || args.LeaderId != rf.votedFor {
 		isSuccess = false
 		Debug(dInfo, "S%v T%v !!!isSuccess:%v ", rf.me, rf.currentTerm, isSuccess)
-		return isSuccess
 	} else if rf.getLog(prevIndex).Term == prevTerm {
-		if args.Entries != nil {
-			rf.logs = rf.logs[:prevIndex]
-			rf.logs = append(rf.logs, args.Entries...)
-		}
+		//if args.Entries != nil {
+		rf.logs = rf.logs[:prevIndex]
+		rf.logs = append(rf.logs, args.Entries...)
 		isSuccess = true
-		Debug(dInfo, "S%v T%v log append:%v ", rf.me, rf.currentTerm, args.Entries)
+		Debug(dInfo, "S%v T%v log append:%v ", rf.me, rf.currentTerm, len(args.Entries))
+		//}
 	} else {
 		isSuccess = false
-		Debug(dInfo, "S%v T%v @@@isSuccess:%v ", rf.me, rf.currentTerm, isSuccess)
-		return isSuccess
+		if len(rf.logs) >= prevIndex {
+			// 该index存在log
+			reply.XTerm = rf.currentTerm
+			for i, _ := range rf.logs {
+				if rf.logs[i].Term == reply.XTerm {
+					reply.XIndex = i
+					break
+				}
+			}
+		} else {
+			reply.XTerm = -1
+		}
+		reply.XLen = len(rf.logs)
+		Debug(dCommit, "S%v T%v set reply", rf.me, rf.currentTerm)
 	}
 
-	if args.LeaderCommit > rf.commitIndex {
+	if isSuccess && args.LeaderCommit > rf.commitIndex {
+		//Debug(dInfo, "S%v T%v args.LeaderCommit:%v len(rf.logs):%v", rf.me, rf.currentTerm, args.LeaderCommit, len(rf.logs))
 		rf.commitIndex = min(args.LeaderCommit, len(rf.logs))
 	}
 	Debug(dInfo, "S%v T%v isSuccess:%v ", rf.me, rf.currentTerm, isSuccess)
@@ -333,9 +360,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return -1, term, isLeader
 	}
 
-	agreement := 0
-	isCommited := false
-
 	entry := Log{
 		Command: command,
 		Term:    rf.currentTerm,
@@ -343,7 +367,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.logs = append(rf.logs, entry)
 
-	Debug(dCommit, "S%v T%v new logs:%v", rf.me, rf.currentTerm, entry)
+	Debug(dClient, "S%v T%v get new logs:%v", rf.me, rf.currentTerm, entry)
+	Debug(dCommit, "S%v T%v Leader Logs:%v", rf.me, rf.currentTerm, len(rf.logs))
+	return len(rf.logs), term, isLeader
+}
+
+func (rf *Raft) sendLogs() {
+	agreement := 0
+	isCommited := false
 
 	for i, _ := range rf.peers {
 
@@ -355,18 +386,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		go func(server int) {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
-			for {
-				entries := make([]Log, 0)
+			for rf.status == Leader {
+				var entries []Log
 
 				entries = append(entries, rf.logs[rf.nextIndex[server]:]...)
-				if entries == nil {
-					return
-				}
-				Debug(dTimer, "S%v TN <--send entries:%v", server, entries)
-				//Debug(dTimer, "S%v TN <--send entries", server)
 
+				Debug(dTimer, "S%v TN <--send entries:%v", server, len(entries))
+				//Debug(dTimer, "S%v TN --->send entries:%v", rf.me, entries)
 				args := rf.createAppendEntriesArgs(entries, server)
-				Debug(dTimer, "S%v TN args.PrevLogIndex:%v", server, args.PrevLogIndex)
 
 				reply := &AppendEntriesReply{}
 
@@ -378,31 +405,77 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					Debug(dTimer, "S%v T%v ---AppendEntries---> S%v failed", rf.me, rf.currentTerm, server)
 					return
 				}
+				Debug(dLeader, "S%v T%v rf.logs:%v", rf.me, rf.currentTerm, len(rf.logs))
+
+				Debug(dError, "S%v T%v reply:%v from:%v", rf.me, rf.currentTerm, reply, server)
+
+				if reply.Term > rf.currentTerm {
+					Debug(dLeader, "S%v T%v old term, become Follower", rf.me, rf.currentTerm)
+					tester.Annotate("Server "+strconv.Itoa(rf.me), "become Follower", "0")
+					rf.updateNodeWithNewTerm(reply.Term)
+					return
+				}
+
 				// 收到回复后才能更改nextIndex
 				if !reply.Success {
-					if rf.nextIndex[server] > 0 {
-						rf.nextIndex[server]--
+					//if rf.nextIndex[server] > 0 {
+					//	rf.nextIndex[server]--
+					//} else {
+					//	break
+					//}
+
+					if rf.nextIndex[server] == 0 {
+						break
 					}
-					Debug(dLog, "S%v T%v ---unsuccess agree---> S%v", rf.me, rf.currentTerm, server)
+
+					if reply.XTerm != -1 {
+						tt := false
+						for index, _ := range rf.logs {
+							if rf.logs[index].Term == reply.XTerm {
+								tt = true
+							}
+						}
+						if tt == false {
+							rf.nextIndex[server] = reply.XIndex
+						} else {
+							for index, _ := range rf.logs {
+								if rf.logs[index].Term == reply.XTerm {
+									rf.nextIndex[server] = index
+								}
+							}
+							//rf.nextIndex[server]++
+						}
+					} else {
+						rf.nextIndex[server] = reply.XLen
+					}
+
+					//Debug(dLog, "S%v T%v ---unsuccess agree---> S%v", rf.me, rf.currentTerm, server)
+					Debug(dLog, "S%v T%v unsuccess, nextIndex in S%v = %v", server, rf.currentTerm, rf.me, rf.nextIndex[server])
+
 					continue
 				} else {
 					//rf.nextIndex[server] = rf.nextIndex[server] + len(entries)
-					rf.nextIndex[server] = len(rf.logs)
-					agreement++
+					if entries != nil {
+						rf.nextIndex[server] = len(rf.logs)
+						agreement++
+					}
 					Debug(dLog, "S%v T%v nextIndex in S%v = %v", server, rf.currentTerm, rf.me, rf.nextIndex[server])
 				}
 
-				if agreement > len(rf.peers)/2 && !isCommited {
+				Debug(dInfo, "S%v T%v agreement:%v from %v and entries:%v", rf.me, rf.currentTerm, agreement, server, entries)
+
+				if agreement > len(rf.peers)/2 && !isCommited && entries != nil {
 					isCommited = true
-					rf.commitIndex += len(entries)
+					rf.commitIndex = len(rf.logs)
+					Debug(dCommit, "S%v T%v commit entries:%v ", rf.me, rf.currentTerm, len(entries))
 					Debug(dClient, "S%v T%v Success commit Index:%v ", rf.me, rf.currentTerm, rf.commitIndex)
+					tester.Annotate("Server "+strconv.Itoa(rf.me), "Success commit Index:"+strconv.Itoa(rf.commitIndex), "0")
+
 				}
 				break
 			}
 		}(i)
 	}
-	//Debug(dCommit, "S%v T%v Leader Logs:%v", rf.me, rf.currentTerm, rf.logs)
-	return len(rf.logs), term, isLeader
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -457,13 +530,10 @@ func (rf *Raft) ticker() {
 func (rf *Raft) getLog(index int) Log {
 	log := Log{
 		Command: nil,
-		Term:    0,
+		Term:    -1,
 	}
 	if len(rf.logs) != 0 {
-		Debug(dCommit, "S%v T%v index:%v len(rf.logs):%v", rf.me, rf.currentTerm, index, len(rf.logs))
 		if index > 0 && index <= len(rf.logs) {
-			// 0 ~ len(rf.logs)-1
-			// 1 ~ len(rf.logs)
 			index = index - 1
 			log = rf.logs[index]
 		} else if index < 0 && len(rf.logs)+index >= 0 {
@@ -492,6 +562,8 @@ func (rf *Raft) Election() {
 	}
 
 	Debug(dInfo, "S%v T%v Election", rf.me, rf.currentTerm)
+	tester.Annotate("Server "+strconv.Itoa(rf.me), "Election in term"+strconv.Itoa(rf.currentTerm), "0")
+
 	for i, _ := range rf.peers {
 		if i == rf.me {
 			rf.votedFor = rf.me
@@ -503,7 +575,7 @@ func (rf *Raft) Election() {
 			defer rf.mu.Unlock()
 
 			reply := &RequestVoteReply{}
-			//Debug(dVote, "S%v T%v ---RequestVote---> S%v", rf.me, rf.currentTerm, server)
+			Debug(dVote, "S%v T%v ---RequestVote---> S%v", rf.me, rf.currentTerm, server)
 
 			rf.mu.Unlock()
 			ok := rf.sendRequestVote(server, args, reply)
@@ -525,9 +597,13 @@ func (rf *Raft) Election() {
 			if votes > len(rf.peers)/2 && rf.status == Candidater {
 				rf.initLeader()
 				Debug(dLeader, "S%v T%v become Leader commitIndex:%v", rf.me, rf.currentTerm, rf.commitIndex)
+				tester.Annotate("Server "+strconv.Itoa(rf.me), "Election success", "0")
+
 			} else if rvotes > len(rf.peers)/2 {
 				rf.status = Follower
+				rf.votedFor = -1
 				Debug(dLeader, "S%v T%v election failed", rf.me, rf.currentTerm)
+				tester.Annotate("Server "+strconv.Itoa(rf.me), "Election failed", "0")
 			}
 
 		}(i)
@@ -540,8 +616,8 @@ func (rf *Raft) commitMsg() {
 
 		applyMsg := rf.createApplyMsg()
 
-		//Debug(dClient, "S%v T%v Commit:%v", rf.me, rf.currentTerm, applyMsg)
-		Debug(dClient, "S%v T%v Commit:%v", rf.me, rf.currentTerm, rf.lastApplied)
+		Debug(dClient, "S%v T%v Commit:%v", rf.me, rf.currentTerm, applyMsg)
+		tester.Annotate("Server "+strconv.Itoa(rf.me), "Commit "+strconv.Itoa(rf.lastApplied), "last Term "+strconv.Itoa(rf.getLog(-1).Term))
 
 		rf.mu.Unlock()
 		rf.applyCh <- applyMsg
@@ -554,32 +630,9 @@ func (rf *Raft) HeartBeat() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	for i, _ := range rf.peers {
-		if i == rf.me {
-			continue
-		}
-		go func(server int) {
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
-			args := rf.createAppendEntriesArgs(nil, server)
+	rf.sendLogs()
 
-			reply := &AppendEntriesReply{}
-
-			rf.mu.Unlock()
-			ok := rf.sendAppendEntries(server, args, reply)
-			rf.mu.Lock()
-
-			if !ok {
-				//Debug(dTimer, "S%v T%v ---HeartBeat---> S%v failed", rf.me, rf.currentTerm, server)
-				return
-			}
-			if reply.Term > rf.currentTerm {
-				Debug(dLeader, "S%v T%v old term, become Follower", rf.me, rf.currentTerm)
-				rf.updateNodeWithNewTerm(reply.Term)
-			}
-
-		}(i)
-	}
+	Debug(dClient, "S%v T%v rf.commitIndex:%v", rf.me, rf.currentTerm, rf.commitIndex)
 
 	rf.commitMsg()
 
@@ -587,12 +640,8 @@ func (rf *Raft) HeartBeat() {
 
 func (rf *Raft) handleHeartBeat(args *AppendEntriesArgs) {
 	if args.Term >= rf.currentTerm {
-		if rf.status == Leader {
-			Debug(dLeader, "S%v T%v <---heartbeat--- S%v, become Follower", rf.me, rf.currentTerm, args.LeaderId)
-		} else if args.Entries == nil {
-			//Debug(dTimer, "S%v T%v <---heartbeat--- S%v", rf.me, rf.currentTerm, args.LeaderId)
-		}
 		rf.updateNodeWithNewTerm(args.Term)
+		rf.votedFor = args.LeaderId
 		rf.resetElectionTicker()
 	}
 }
@@ -652,11 +701,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		dead:        0,
 		currentTerm: 0,
 		votedFor:    -1,
-		logs:        make([]Log, 0),
+		logs:        nil,
 		commitIndex: 0,
 		lastApplied: 0,
-		nextIndex:   make([]int, 0),
-		matchIndex:  make([]int, 0),
+		nextIndex:   nil,
+		matchIndex:  nil,
 		applyCh:     applyCh,
 		wg:          sync.WaitGroup{},
 		status:      Follower,
