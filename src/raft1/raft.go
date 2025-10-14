@@ -152,37 +152,70 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	rf.resetElectionTicker()
+	//rf.resetElectionTicker()
+	//
+	//reply.VoteGranted = false
+	//
+	//if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) || args.Term > rf.currentTerm && args.LastLogIndex <= rf.commitIndex {
+	//	// not voted or higher term, return true
+	//	//reply.VoteGranted = true
+	//	if args.LastLogTerm > rf.getLog(-1).Term {
+	//		reply.VoteGranted = true
+	//	} else if args.LastLogTerm == rf.getLog(-1).Term && args.LastLogIndex >= len(rf.logs) {
+	//		reply.VoteGranted = true
+	//	} else {
+	//		reply.VoteGranted = false
+	//	}
+	//}
+	//
+	//if args.Term < rf.currentTerm || args.Term == rf.currentTerm && rf.votedFor != -1 {
+	//	// term is lower than mine, or the same term but already voted return false
+	//	reply.VoteGranted = false
+	//}
+	//
+	//if reply.VoteGranted == true {
+	//	rf.updateNodeWithTerm(args.Term)
+	//	rf.votedFor = args.CandidateId
+	//	//Debug(dVote, "S%v T%v ---Vote---> S%v", rf.me, rf.currentTerm, args.CandidateId)
+	//} else {
+	//	//Debug(dVote, "S%v T%v ---Vote---> S%v refused", rf.me, rf.currentTerm, args.CandidateId)
+	//}
+	//// reply this node`s term
+	//reply.Term = rf.currentTerm
 
+	// 如果term < currentTerm返回 false
+	// 如果 votedFor 为空或者为 candidateId，并且候选人的日志至少和自己一样新，那么就投票给他
 	reply.VoteGranted = false
-
-	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) || args.Term > rf.currentTerm {
-		// not voted or higher term, return true
-		reply.VoteGranted = true
-	}
-
-	if args.Term < rf.currentTerm || args.Term == rf.currentTerm && rf.votedFor != -1 {
-		// term is lower than mine, or the same term but already voted return false
-		reply.VoteGranted = false
-	}
-
-	if args.LastLogTerm > rf.getLog(-1).Term {
-		reply.VoteGranted = true
-	} else if args.LastLogTerm == rf.getLog(-1).Term && args.LastLogIndex >= len(rf.logs) {
-		reply.VoteGranted = true
-	} else {
-		reply.VoteGranted = false
-	}
-
-	if reply.VoteGranted == true {
-		rf.updateNodeWithNewTerm(args.Term)
-		rf.votedFor = args.CandidateId
-		//Debug(dVote, "S%v T%v ---Vote---> S%v", rf.me, rf.currentTerm, args.CandidateId)
-	} else {
-		//Debug(dVote, "S%v T%v ---Vote---> S%v refused", rf.me, rf.currentTerm, args.CandidateId)
-	}
-	// reply this node`s term
 	reply.Term = rf.currentTerm
+
+	if args.Term > rf.currentTerm {
+		rf.updateNodeWithTerm(args.Term)
+		reply.VoteGranted = true
+	}
+	/*if args.Term < rf.currentTerm {
+		reply.VoteGranted = false
+	} else*/
+	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
+		if args.LastLogTerm > rf.getLog(-1).Term {
+			// 候选人最后一条Log条目的任期号大于本地最后一条Log条目的任期号；
+			reply.VoteGranted = true
+		} else if args.LastLogTerm == rf.getLog(-1).Term && args.LastLogIndex >= len(rf.logs)-1 {
+			// 或者，候选人最后一条Log条目的任期号等于本地最后一条Log条目的任期号，且候选人的Log记录长度大于等于本地Log记录的长度
+			reply.VoteGranted = true
+		} else {
+			reply.VoteGranted = false
+		}
+	}
+
+	if reply.VoteGranted {
+		rf.votedFor = args.CandidateId
+		//Debug(dTerm, "S%v T%v success vote to S%v", rf.me, rf.currentTerm, args.CandidateId)
+		//Debug(dPersist, "S%v T%v success vote to S%v", rf.me, rf.currentTerm, args.CandidateId)
+		//Debug(dTerm, "S%v T%v args:%v", rf.me, rf.currentTerm, args)
+		//Debug(dPersist, "S%v T%v rf.votedFor:%v args.LastLogTerm:%v", rf.me, rf.currentTerm, rf.votedFor, args.LastLogTerm)
+		//Debug(dPersist, "S%v T%v rf.getLog(-1).Term:%v args.LastLogIndex:%v", rf.me, rf.currentTerm, rf.getLog(-1).Term, args.LastLogIndex)
+		//Debug(dPersist, "S%v T%v len(rf.logs)-1:%v", rf.me, rf.currentTerm, len(rf.logs)-1)
+	}
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -236,27 +269,22 @@ type AppendEntriesReply struct {
 	Term    int
 	Success bool
 
-	XTerm  int
+	// 冲突log对应的term
+	XTerm int
+	// 第一条Term==XTerm的log
 	XIndex int
-	XLen   int
+	// log长度
+	XLen int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if rf.status == Leader {
-		return
-	}
-
-	reply.Term = rf.currentTerm
+	rf.handleHeartBeat(args)
 
 	reply.Success = rf.handleAppendLog(args, reply)
-
-	if reply.Success {
-		rf.handleHeartBeat(args)
-
-	}
+	reply.Term = rf.currentTerm
 
 	rf.commitMsg()
 
@@ -264,56 +292,62 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 // TODO
 func (rf *Raft) handleAppendLog(args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	//TODO
-	// 默认false时 B2 无法通过
-	// 默认true时 B6 偶然报错
 
-	isSuccess := true
-	prevIndex := args.PrevLogIndex
-	prevTerm := args.PrevLogTerm
+	isSuccess := false
 
-	if args.Term < rf.currentTerm || args.LeaderId != rf.votedFor {
-		isSuccess = false
-		Debug(dInfo, "S%v T%v AppendLog false from leader=%v", rf.me, rf.currentTerm, args.LeaderId)
-		Debug(dInfo, "S%v T%v because args.Term < rf.currentTerm", rf.me, rf.currentTerm)
-		Debug(dInfo, "S%v T%v args.Term:%v rf.currentTerm:%v", rf.me, rf.currentTerm, args.Term, rf.currentTerm)
-		Debug(dInfo, "S%v T%v logs:%v ", rf.me, rf.currentTerm, len(args.Entries))
-	} else if rf.getLog(prevIndex).Term == prevTerm {
-		rf.logs = rf.logs[:prevIndex]
-		rf.logs = append(rf.logs, args.Entries...)
+	if rf.status == Leader {
+		return false
+	}
+	// 如果领导人的任期小于接收者的当前任期
+	if args.Term < rf.currentTerm {
+		return false
+	}
+	// 找不到一个和 prevLogIndex 以及 prevLogTerm 一样的索引和任期的日志条目
+	Debug(dInfo, "S%v T%v log:%v", rf.me, rf.currentTerm, len(rf.logs))
+	if rf.getLog(args.PrevLogIndex).Term == -1 {
+		// index冲突(无此index)
+		Debug(dInfo, "S%v T%v index冲突(无此index)", rf.me, rf.currentTerm)
+		reply.XTerm = -1
+	} else if rf.getLog(args.PrevLogIndex).Term != args.PrevLogTerm {
+		// Term冲突
+		Debug(dInfo, "S%v T%v Term冲突 rf.pTerm:%v args.PrevLogTerm:%v", rf.me, rf.currentTerm, rf.getLog(args.PrevLogIndex).Term, args.PrevLogTerm)
+		reply.XTerm = rf.getLog(args.PrevLogIndex).Term
+	} else {
 		isSuccess = true
-		if args.Entries != nil {
-			//Debug(dInfo, "S%v T%v log append:%v ", rf.me, rf.currentTerm, len(args.Entries))
-		}
-	} else {
-		isSuccess = false
-		if len(rf.logs) >= prevIndex {
-			// 该index存在log
-			reply.XTerm = rf.currentTerm
-			for i, _ := range rf.logs {
-				if rf.logs[i].Term == reply.XTerm {
-					reply.XIndex = i
-					break
-				}
-			}
-		} else {
-			reply.XTerm = -1
-		}
-		reply.XLen = len(rf.logs)
-		//Debug(dCommit, "S%v T%v set reply", rf.me, rf.currentTerm)
 	}
 
+	// term为XTerm的第一条log
+	for index, log := range rf.logs {
+		if log.Term == reply.XTerm {
+			reply.XIndex = index
+			break
+		}
+	}
+
+	reply.XLen = len(rf.logs)
+
+	// 如果一个已经存在的条目和刚刚接收到的日志条目发生了冲突（因为索引相同，任期不同），
+	// 那么就删除这个已经存在的条目以及它之后的所有条目
+	// 追加日志中尚未存在的任何新条目
+	// 注：直接删掉并添加，不需要做判断
+	// L:   0   1   2   3   4
+	// F:	0   1   2   5
+	//				p   n
+	// E:               3   4
+	// && args.Entries != nil排除心跳
+	if isSuccess && args.Entries != nil {
+		Debug(dTerm, "S%v T%v args.PrevLogIndex+1:%v", rf.me, rf.currentTerm, args.PrevLogIndex+1)
+		rf.logs = rf.logs[:args.PrevLogIndex+1]
+		rf.logs = append(rf.logs, args.Entries...)
+		Debug(dInfo, "S%v T%v new log:%v", rf.me, rf.currentTerm, len(rf.logs))
+	}
+
+	// 已提交的最高日志条目的索引大于接收者的已知已提交最高日志条目的索引
 	if isSuccess && args.LeaderCommit > rf.commitIndex {
-		//Debug(dInfo, "S%v T%v args.LeaderCommit:%v len(rf.logs):%v", rf.me, rf.currentTerm, args.LeaderCommit, len(rf.logs))
-		rf.commitIndex = min(args.LeaderCommit, len(rf.logs))
-
-		//Debug(dError, "S%v T%v now logs:%v", rf.me, rf.currentTerm, len(rf.logs))
-		Debug(dClient, "S%v T%v commitIndex:%v", rf.me, rf.currentTerm, rf.commitIndex)
-		//tester.Annotate("Server "+strconv.Itoa(rf.me), "success commit "+strconv.Itoa(rf.commitIndex), "0")
-	} else {
-		//tester.Annotate("Server "+strconv.Itoa(rf.me), "failed commit "+strconv.Itoa(rf.commitIndex), "0")
+		//  leaderCommit 或者是 上一个新条目的索引 取两者的最小值
+		rf.commitIndex = min(args.LeaderCommit, len(rf.logs)-1)
 	}
-	//Debug(dInfo, "S%v T%v isSuccess:%v ", rf.me, rf.currentTerm, isSuccess)
+
 	return isSuccess
 }
 
@@ -329,9 +363,10 @@ func (rf *Raft) createAppendEntriesArgs(entries []Log, peer int) *AppendEntriesA
 		Term:     rf.currentTerm,
 		LeaderId: rf.me,
 
-		PrevLogIndex: rf.nextIndex[peer],
-
-		PrevLogTerm: rf.getLog(rf.nextIndex[peer]).Term,
+		// 本地中，peer已存在的最后一个index，将要添加log的位置的前一个位置
+		PrevLogIndex: rf.nextIndex[peer] - 1,
+		// PrevLogIndex位置log的term
+		PrevLogTerm: rf.getLog(rf.nextIndex[peer] - 1).Term,
 		Entries:     entries,
 
 		LeaderCommit: rf.commitIndex,
@@ -376,110 +411,151 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 
 	rf.logs = append(rf.logs, entry)
+	rf.matchIndex[rf.me] = len(rf.logs) - 1
 
 	//Debug(dClient, "S%v T%v get new logs:%v", rf.me, rf.currentTerm, entry)
 	Debug(dCommit, "S%v T%v Leader len(Logs):%v Term:%v", rf.me, rf.currentTerm, len(rf.logs), rf.currentTerm)
-	return len(rf.logs), term, isLeader
+	return len(rf.logs) - 1, term, isLeader
 }
 
 func (rf *Raft) sendLogs() {
-	agreement := 0
-	isCommited := false
+	//agreement := 0
+	//isCommited := false
 
 	for i, _ := range rf.peers {
 
 		if i == rf.me {
-			agreement++
+			//agreement++
 			continue
 		}
 
 		go func(server int) {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
-			for rf.status == Leader {
-				var entries []Log
 
+			//for rf.status == Leader {
+			var entries []Log
+			// entries=nil表示为单纯的心跳包
+			if rf.nextIndex[server] < len(rf.logs) && rf.nextIndex[server] > 0 {
+				// 其中‘=’的结果是 append nil，表示已将所有日志发送完毕。
+				// case 1:
+				// local: 0   1   2   3   4   5
+				// peer:  0   1   2   3
+				//				          n=4
+				//entries:				  4   5
+
+				// case 2:
+				// local: 0   1   2   3   4   5
+				// peer:  0   1   2   3   4   5
+				// nextIndex:		             n=6
+				//entries:			nil
 				entries = append(entries, rf.logs[rf.nextIndex[server]:]...)
+			}
 
-				//Debug(dTimer, "S%v TN <--send entries:%v", server, len(entries))
-				//Debug(dTimer, "S%v TN --->send entries:%v", rf.me, entries)
-				args := rf.createAppendEntriesArgs(entries, server)
+			//Debug(dLog2, "S%v T%v log:%v", rf.me, rf.currentTerm, rf.logs)
+			//if entries != nil {
+			//	Debug(dTimer, "S%v T%v send %v to S%v", rf.me, rf.currentTerm, rf.getLog(-1), server)
+			//}
 
-				reply := &AppendEntriesReply{}
+			args := rf.createAppendEntriesArgs(entries, server)
+			reply := &AppendEntriesReply{}
 
-				rf.mu.Unlock()
-				ok := rf.sendAppendEntries(server, args, reply)
-				rf.mu.Lock()
+			rf.mu.Unlock()
+			ok := rf.sendAppendEntries(server, args, reply)
+			rf.mu.Lock()
+			if !ok {
+				return
+			}
+			//Debug(dClient, "S%v T%v reply:%v from S%v", rf.me, rf.currentTerm, reply, server)
 
-				if !ok {
-					//Debug(dTimer, "S%v T%v ---AppendEntries---> S%v failed", rf.me, rf.currentTerm, server)
-					return
-				}
-				//Debug(dLeader, "S%v T%v rf.logs:%v", rf.me, rf.currentTerm, len(rf.logs))
+			if reply.Term > rf.currentTerm {
+				// 过期的Leader
+				Debug(dLeader, "S%v T%v 过期的Leader,变为Follower", rf.me, rf.currentTerm)
+				// 更新Node的状态
+				rf.updateNodeWithTerm(reply.Term)
+				//return
+			}
 
-				if entries != nil {
-					Debug(dError, "S%v T%v from:%v reply:%v", rf.me, rf.currentTerm, server, reply)
-					//Debug(dInfo, "S%v T%v agreement:%v from %v and entries:%v", rf.me, rf.currentTerm, agreement, server, len(entries))
-				}
+			if reply.Success {
+				// 成功接收log
+				// 由于发送了所有的新log，如果成功了则该node的下一个log位置为len(rf.logs)
+				//Debug(dLeader, "S%v T%v reply success from S%v", rf.me, rf.currentTerm, server)
+				rf.nextIndex[server] = len(rf.logs)
+				rf.matchIndex[server] = len(rf.logs) - 1
+				// 用于过半票决
+				//agreement++
+				//Debug(dLog, "S%v T%v append log success in S%v,and entries:%v", rf.me, rf.currentTerm, server, entries)
+			} else {
+				// 未成功接收，则一定返回有XTerm,Xindex,Xlen
+				if reply.XTerm != -1 {
+					// -1表示PrevLogIndex位置发生冲突，即nextIndex-1或len(log)位置。表示要插入的位置的前一个位置冲突
 
-				if reply.Term > rf.currentTerm {
-					Debug(dLeader, "S%v T%v old term, become Follower", rf.me, rf.currentTerm)
-					tester.Annotate("Server "+strconv.Itoa(rf.me), "become Follower", "0")
-					rf.updateNodeWithNewTerm(reply.Term)
-					return
-				}
-
-				// 收到回复后才能更改nextIndex
-				if !reply.Success {
-
-					if rf.nextIndex[server] == 0 {
-						break
+					// leader检查自身是否有Xterm的Term
+					iXTerm := -1
+					// 倒序遍历，提取最后一个Term=XTerm的index
+					for iXTerm = len(rf.logs) - 1; iXTerm >= 0; iXTerm-- {
+						if rf.logs[iXTerm].Term == reply.XTerm {
+							break
+						}
 					}
+					//Debug(dClient, "S%v T%v iXTerm:%v", rf.me, rf.currentTerm, iXTerm)
 
-					if reply.XTerm != -1 {
-						tt := false
-						for index, _ := range rf.logs {
-							if rf.logs[index].Term == reply.XTerm {
-								tt = true
-							}
-						}
-						if tt == false {
-							rf.nextIndex[server] = reply.XIndex
-						} else {
-							for index, _ := range rf.logs {
-								if rf.logs[index].Term == reply.XTerm {
-									rf.nextIndex[server] = index
-								}
-							}
-							//rf.nextIndex[server]++
-						}
+					if iXTerm != -1 {
+						// 存在，设nextIndex为indexLastXTerm下一个。
+						// 表示peer在XTerm期间的所有日志都已存在(对于peer，XTerm为最新Term)
+						// L:	[0   1   2   3   4]
+						// t:    1   1   1   2   2
+						//                           n=5
+						// F: 	[0   1   2   3   4]
+						// t:	 1   1   1   1   1
+						//                   n=3
+						rf.nextIndex[server] = iXTerm + 1
 					} else {
-						rf.nextIndex[server] = reply.XLen
+						// 不存在，设nextIndex为reply.XIndex
+						// L:	[0   1   2   3   4]
+						// t:	 1   1   1   2   2
+						// 						     n=5
+						// F:	[0   1   2   3   4]
+						// t:	 1   1   1   1   1
+						//					 n=3
+						rf.nextIndex[server] = reply.XIndex
 					}
-
-					//Debug(dLog, "S%v T%v ---unsuccess agree---> S%v", rf.me, rf.currentTerm, server)
-					//Debug(dLog, "S%v T%v unsuccess, nextIndex in S%v = %v", server, rf.currentTerm, rf.me, rf.nextIndex[server])
-
-					continue
 				} else {
-					//rf.nextIndex[server] = rf.nextIndex[server] + len(entries)
-					if entries != nil {
-						rf.nextIndex[server] = len(rf.logs)
+					// PrevLogIndex位置不存在log
+					// L:	[0   1   2   3   4]
+					// t:	 1   1   1   2   2
+					// 				         p=4 n=5
+					// F:	[0   1   2   3]
+					// t:	 1   1   1   1
+					//					     n=4
+
+					rf.nextIndex[server] = reply.XLen
+				}
+				//Debug(dLog, "S%v T%v nextIndex处理结束 nextIndex[%v]:%v", rf.me, rf.currentTerm, server, rf.nextIndex[server])
+			}
+
+			// 至此nextIndex处理结束。
+			// 注：心跳也会进行处理，是否应该取消对nextIndex处理?
+
+			//if agreement > len(rf.peers)/2 && !isCommited {
+			//	isCommited = true
+			//	rf.commitIndex += len(entries)
+			//}
+
+			// 过半票决，成功为大多数添加日志
+			for N := rf.commitIndex + 1; N < len(rf.logs); N++ {
+				agreement := 0
+				for _, matchIndex := range rf.matchIndex {
+					if matchIndex >= N && rf.logs[N].Term == rf.currentTerm {
 						agreement++
 					}
-					//Debug(dLog, "S%v T%v nextIndex in S%v = %v", server, rf.currentTerm, rf.me, rf.nextIndex[server])
 				}
-
-				if agreement > len(rf.peers)/2 && !isCommited && entries != nil {
-					isCommited = true
-					rf.commitIndex = len(rf.logs)
-					//Debug(dCommit, "S%v T%v commit entries:%v ", rf.me, rf.currentTerm, len(entries))
-					Debug(dClient, "S%v T%v Success commit Index:%v ", rf.me, rf.currentTerm, rf.commitIndex)
-					tester.Annotate("Server "+strconv.Itoa(rf.me), "Success commit Index:"+strconv.Itoa(rf.commitIndex), "0")
-
+				if agreement > len(rf.peers)/2 {
+					rf.commitIndex = N
+					Debug(dCommit, "S%v T%v Leader commitIndex=%v", rf.me, rf.currentTerm, N)
 				}
-				break
 			}
+			//}
 		}(i)
 	}
 }
@@ -538,14 +614,21 @@ func (rf *Raft) getLog(index int) Log {
 		Command: nil,
 		Term:    -1,
 	}
-	if len(rf.logs) != 0 {
-		if index > 0 && index <= len(rf.logs) {
-			index = index - 1
+
+	if len(rf.logs) > 1 {
+		// 存在log[0],len==1
+		if index >= 1 && index < len(rf.logs) {
+			// logs:	0  1  2  3
+			// 			   1  2  3   len=4
 			log = rf.logs[index]
-		} else if index < 0 && len(rf.logs)+index >= 0 {
-			index = len(rf.logs) + index
-			log = rf.logs[index]
+		} else if index <= -1 && index > -len(rf.logs) {
+			// logs:	0  1  2  3
+			// 		      -3 -2 -1	 len=4
+			log = rf.logs[len(rf.logs)+index]
 		}
+	}
+	if index == 0 {
+		log = rf.logs[0]
 	}
 	return log
 }
@@ -563,11 +646,11 @@ func (rf *Raft) Election() {
 	args := &RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
-		LastLogIndex: len(rf.logs),
+		LastLogIndex: len(rf.logs) - 1,
 		LastLogTerm:  rf.getLog(-1).Term,
 	}
 
-	//Debug(dInfo, "S%v T%v Election", rf.me, rf.currentTerm)
+	Debug(dInfo, "S%v T%v Election", rf.me, rf.currentTerm)
 	//tester.Annotate("Server "+strconv.Itoa(rf.me), "Election in term"+strconv.Itoa(rf.currentTerm), "0")
 
 	for i, _ := range rf.peers {
@@ -591,12 +674,14 @@ func (rf *Raft) Election() {
 				//Debug(dVote, "S%v T%v ---RequestVote---> S%v failed", rf.me, rf.currentTerm, server)
 				return
 			}
+			// TODO:delete
 			if reply.Term > rf.currentTerm {
-				rf.updateNodeWithNewTerm(reply.Term)
+				rf.updateNodeWithTerm(reply.Term)
 			}
 			if reply.VoteGranted == false {
 				rvotes++
 			} else if reply.VoteGranted == true {
+				Debug(dVote, "S%v T%v ---Vote---> S%v ", server, rf.currentTerm, rf.me)
 				votes++
 			}
 
@@ -622,12 +707,12 @@ func (rf *Raft) commitMsg() {
 
 		applyMsg := rf.createApplyMsg()
 
-		Debug(dClient, "S%v T%v Commit:%v", rf.me, rf.currentTerm, applyMsg)
-		tester.Annotate("Server "+strconv.Itoa(rf.me), "Commit "+strconv.Itoa(rf.lastApplied), "last Term "+strconv.Itoa(rf.getLog(-1).Term))
-
 		rf.mu.Unlock()
 		rf.applyCh <- applyMsg
 		rf.mu.Lock()
+
+		Debug(dClient, "S%v T%v Commit:%v", rf.me, rf.currentTerm, applyMsg)
+
 	}
 }
 
@@ -638,22 +723,21 @@ func (rf *Raft) HeartBeat() {
 
 	rf.sendLogs()
 
-	//Debug(dClient, "S%v T%v rf.commitIndex:%v", rf.me, rf.currentTerm, rf.commitIndex)
-
 	rf.commitMsg()
 
 }
 
 func (rf *Raft) handleHeartBeat(args *AppendEntriesArgs) {
 	if args.Term >= rf.currentTerm {
-		rf.updateNodeWithNewTerm(args.Term)
+		// 新Term，新Leader的心跳
+		rf.updateNodeWithTerm(args.Term)
 		rf.votedFor = args.LeaderId
 		rf.resetElectionTicker()
 	}
 }
 
-// updateNodeWithNewTerm update the term and change node`s new term status
-func (rf *Raft) updateNodeWithNewTerm(term int) {
+// updateNodeWithTerm update the term and change node`s new term status
+func (rf *Raft) updateNodeWithTerm(term int) {
 	rf.currentTerm = term
 	rf.votedFor = -1
 	rf.status = Follower
@@ -707,7 +791,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		dead:        0,
 		currentTerm: 0,
 		votedFor:    -1,
-		logs:        nil,
+		logs:        make([]Log, 1),
 		commitIndex: 0,
 		lastApplied: 0,
 		nextIndex:   nil,
