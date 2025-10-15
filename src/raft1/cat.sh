@@ -15,4 +15,4 @@ if [ ! -f "$LOG_FILE" ]; then
 fi
 
 # 执行命令
-cat "$LOG_FILE" | python3 dslogs.py -c 7
+cat "$LOG_FILE" | head -n 3000| python3 dslogs.py -c 7
