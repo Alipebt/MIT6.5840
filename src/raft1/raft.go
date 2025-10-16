@@ -40,7 +40,6 @@ type Raft struct {
 	matchIndex []int
 
 	applyCh chan raftapi.ApplyMsg
-	wg      sync.WaitGroup
 
 	heartBeatTicker *time.Ticker
 	electionTicker  *time.Ticker
@@ -260,7 +259,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 }
 
-// TODO
 func (rf *Raft) handleAppendLog(args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 
 	isSuccess := false
@@ -299,23 +297,22 @@ func (rf *Raft) handleAppendLog(args *AppendEntriesArgs, reply *AppendEntriesRep
 		}
 	}
 
-	reply.XLen = len(rf.logs)
-
 	// 如果一个已经存在的条目和刚刚接收到的日志条目发生了冲突（因为索引相同，任期不同），
 	// 那么就删除这个已经存在的条目以及它之后的所有条目
 	// 追加日志中尚未存在的任何新条目
-	// 注：直接删掉并添加，不需要做判断
 	// L:   0   1   2   3   4
 	// F:	0   1   2   5
 	//				p   n
 	// E:               3   4
-	// && args.Entries != nil排除心跳
+	// args.Entries != nil排除心跳
 	if isSuccess && args.Entries != nil {
 		//Debug(dTerm, "S%v T%v cut log 0 ~ %v", rf.me, rf.currentTerm, args.PrevLogIndex+1)
 		rf.logs = rf.logs[:args.PrevLogIndex+1]
 		rf.logs = append(rf.logs, args.Entries...)
 		//Debug(dTerm, "S%v T%v add log %v ~ %v t:%v", rf.me, rf.currentTerm, args.PrevLogIndex+2, len(rf.logs), rf.getLog(-1).Term)
 	}
+
+	reply.XLen = len(rf.logs)
 
 	// 已提交的最高日志条目的索引大于接收者的已知已提交最高日志条目的索引
 	if isSuccess && args.LeaderCommit > rf.commitIndex {
@@ -456,10 +453,10 @@ func (rf *Raft) sendLogs() {
 
 			if reply.Success {
 				// 成功接收log
-				// 由于发送了所有的新log，如果成功了则该node的下一个log位置为len(rf.logs)
+				// 由于发送了所有的新log，如果成功了则该node的下一个log位置为其原有log长度+entries长度
 				// Debug(dLeader, "S%v T%v reply success from S%v", rf.me, rf.currentTerm, server)
-				rf.nextIndex[server] = reply.XLen + len(entries)
-				rf.matchIndex[server] = reply.XLen + len(entries) - 1
+				rf.nextIndex[server] = reply.XLen
+				rf.matchIndex[server] = reply.XLen - 1
 				//if len(entries) != 0 {
 				//	Debug(dLog, "S%v T%v append log success in S%v,and entries:%v", rf.me, rf.currentTerm, server, len(entries))
 				//}
@@ -800,7 +797,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		nextIndex:   nil,
 		matchIndex:  nil,
 		applyCh:     applyCh,
-		wg:          sync.WaitGroup{},
 		status:      Follower,
 	}
 
