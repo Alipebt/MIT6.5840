@@ -679,7 +679,7 @@ if reply.Success {
 		// PrevLogIndex位置不存在log
 		// L:	[0   1   2   3   4]
 		// t:	 1   1   1   2   2
-		// 				         p=4 n=5
+		// 				        p=4 n=5
 		// F:	[0   1   2   3]
 		// t:	 1   1   1   1
 		//					     n=4
@@ -702,6 +702,57 @@ for N := rf.commitIndex + 1; N < len(rf.logs); N++ {
 	}
 	if agreement > len(rf.peers)/2 {
 		rf.commitIndex = N
+	}
+}
+```
+
+然后每个心跳期间也同时进行判断是否将某个`log`应用到状态机（达成一致后消息回传）
+
+```go
+func (rf *Raft) commitMsg() {
+	if rf.lastApplied < rf.commitIndex {
+		rf.lastApplied++
+		applyMsg := rf.createApplyMsg()
+		rf.mu.Unlock()
+		rf.applyCh <- applyMsg
+		rf.mu.Lock()
+	}
+}
+```
+
+此外，由于选举过程中，拥有最新已提交的日志的节点才允许成为`Leader`，所以现在需要进行选举约束，这里的限制是，节点只能向满足下面条件之一的候选人投出赞成票：
+
+- 候选人最后一条Log条目的任期号**大于**本地最后一条Log条目的任期号；
+
+- 或者，候选人最后一条Log条目的任期号**等于**本地最后一条Log条目的任期号，且候选人的Log记录长度**大于等于**本地Log记录的长度
+
+```go
+func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	// 如果term < currentTerm返回 false
+	// 如果 votedFor 为空或者为 candidateId，并且候选人的日志至少和自己一样新，那么就投票给他
+	reply.VoteGranted = false
+	reply.Term = rf.currentTerm
+	if args.Term > rf.currentTerm {
+		rf.updateNodeWithTerm(args.Term)
+		reply.VoteGranted = true
+	}
+	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
+		if args.LastLogTerm > rf.getLog(-1).Term {
+			// 候选人最后一条Log条目的任期号大于本地最后一条Log条目的任期号；
+			reply.VoteGranted = true
+		} else if args.LastLogTerm == rf.getLog(-1).Term && args.LastLogIndex >= len(rf.logs)-1 {
+			// 或者，候选人最后一条Log条目的任期号等于本地最后一条Log条目的任期号，
+          // 且候选人的Log记录长度大于等于本地Log记录的长度
+			reply.VoteGranted = true
+		} else {
+			reply.VoteGranted = false
+		}
+	}
+	if reply.VoteGranted {
+		rf.votedFor = args.CandidateId
+		rf.resetElectionTicker()
 	}
 }
 ```
