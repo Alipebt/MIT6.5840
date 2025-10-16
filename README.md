@@ -522,3 +522,187 @@ func (rf *Raft) ticker() {
 - `Candidater`的`term`等于当前节点的`term`，但当前节点已投过票，则拒绝投票
 - `Candidater`的`term`等于当前节点的`term`，且当前节点未投票或者已投给`Candidater`，则同意投票
 - `Candidater`的`term`大于当前节点的`term`，更新当前节点`term`和状态，并且同意投票
+
+### Part 3B: log
+
+完成这部分首先要注意以下几点：
+
+- `Start()`是客户端所调用的函数，并注意其返回值。`Raft`中的所有`Log`都是从这获取的
+- 成功`commit log`后需要使用`rf.applyCh <- applyMsg`向客户端进行回复
+- `log[0]`可以初始化为空`log`，使下标从1开始，简化算法的实现逻辑
+- 心跳和日志复制共用一个函数：`AppendEntries()`，其区别为心跳相当于复制空日志
+
+先从`Start()`函数开始。在`Leader`中，`Start()`会先将客户端发来的内容存入本地`log`中，然后返回该`log`的下标，用来检测是否这个`log`在系统中达成一致。
+
+```go
+func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	term := rf.currentTerm
+	isLeader := rf.status == Leader
+	if !isLeader {
+		return -1, term, isLeader
+	}
+
+	entry := Log{
+		Command: command,
+		Term:    rf.currentTerm,
+	}
+
+	rf.logs = append(rf.logs, entry)
+    // 已知节点已复制的最新日志的下标。
+    // 此处为设置自己已知自己的最新日志。用于后续判断commitIndex
+	rf.matchIndex[rf.me] = len(rf.logs) - 1
+
+    // 返回此log下标
+	return len(rf.logs) - 1, term, isLeader
+}
+
+```
+
+现在本地有了新日志了，需要对整个系统中的节点进行日志复制。在`Leader`发送心跳时，根据`nextIndex`判断是否存在新日志需要发送。
+
+```go
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+
+	// 冲突log对应的term
+	XTerm int
+	// 第一条Term==XTerm的log
+	XIndex int
+	// log长度
+	XLen int
+}
+```
+
+
+
+当收到添加成功的回复时，更改`Leader`的`nextIndex`和`matchIndex`。其中`nextIndex`是要向各节点添加的下一个`log`的下标，`matchIndex`是已知各节点成功复制的最新`Log`的下标。
+
+当收到失败的回复时，则根据以下逻辑填充所需的数据：
+
+- `XTerm`：这个是`Follower`中与`Leader`冲突的`Log`对应的任期号。如果`Follower`在对应位置的任期号不匹配，它会拒绝`Leader`的`AppendEntries`消息，并将自己的任期号放在`XTerm`中。如果`Follower`在对应位置没有`Log`，那么这里会返回` -1`。
+- `XIndex`：这个是`Follower`中，对应任期号为`XTerm`的第一条`Log`条目的槽位号。
+- `XLen`：当前`Follower`的`Log`长度
+
+```go
+func (rf *Raft) handleAppendLog(args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	isSuccess := false
+	if rf.status == Leader {
+		return false
+	}
+	// 如果领导人的任期小于接收者的当前任期
+	if args.Term < rf.currentTerm {
+		return false
+	}
+	// 找不到一个和 prevLogIndex 以及 prevLogTerm 一样的索引和任期的日志条目
+	if rf.getLog(args.PrevLogIndex).Term == -1 {
+		// index冲突(无此index)
+		reply.XTerm = -1
+	} else if rf.getLog(args.PrevLogIndex).Term != args.PrevLogTerm {
+		// Term冲突
+		reply.XTerm = rf.getLog(args.PrevLogIndex).Term
+	} else {
+		isSuccess = true
+	}
+	// term为XTerm的第一条log, 当XTerm=-1时,XIndex一直为0
+	for index, log := range rf.logs {
+		if log.Term == reply.XTerm {
+			reply.XIndex = index
+			break
+		}
+	}
+	// 如果一个已经存在的条目和刚刚接收到的日志条目发生了冲突（因为索引相同，任期不同），
+	// 那么就删除这个已经存在的条目以及它之后的所有条目
+	// 追加日志中尚未存在的任何新条目
+	// L:   0   1   2   3   4
+	// F:	0   1   2   5
+	//				p   n
+	// E:             3   4
+	// args.Entries != nil排除心跳
+	if isSuccess && args.Entries != nil {
+		rf.logs = rf.logs[:args.PrevLogIndex+1]
+		rf.logs = append(rf.logs, args.Entries...)
+	}
+	reply.XLen = len(rf.logs)
+	// 已提交的最高日志条目的索引大于接收者的已知已提交最高日志条目的索引
+	if isSuccess && args.LeaderCommit > rf.commitIndex {
+		//  leaderCommit 或者是 上一个新条目的索引 取两者的最小值
+		rf.commitIndex = min(args.LeaderCommit, len(rf.logs)-1)
+	}
+	return isSuccess
+}
+```
+
+在`Follower`写入`reply`后，再根据`LeaerCommit`更新自己的`commitIndex`。然后`Leader`处理接收到的信息
+
+```go
+if reply.Success {
+	// 成功接收log
+	// 由于发送了所有的新log，如果成功了则该node的下一个log位置为log长度
+	rf.nextIndex[server] = reply.XLen
+	rf.matchIndex[server] = reply.XLen - 1
+} else {
+	// 未成功接收，则一定返回有XTerm,Xindex,Xlen
+	if reply.XTerm != -1 {
+		// -1表示PrevLogIndex位置发生冲突，即nextIndex-1或len(log)位置。表示要插入的位置的前一个位置冲突
+		// leader检查自身是否有Xterm的Term
+		iXTerm := -1
+		// 倒序遍历，提取最后一个Term=XTerm的index
+		for iXTerm = len(rf.logs) - 1; iXTerm >= 0; iXTerm-- {
+			if rf.logs[iXTerm].Term == reply.XTerm {
+				break
+			}
+		}
+		if iXTerm != -1 {
+			// 存在，设nextIndex为indexLastXTerm下一个。
+			// 表示peer在XTerm期间的所有日志都已存在(对于peer，XTerm为最新Term)
+			// L:	[0   1   2   3   4]
+			// t:    1   1   1   2   2
+			//                      n=5
+			// F: 	[0   1   2   3   4]
+			// t:	 1   1   1   1   1
+			//                n=3
+			rf.nextIndex[server] = iXTerm + 1
+		} else {
+			// 不存在，设nextIndex为reply.XIndex
+			// L:	[0   1   2   3   4]
+			// t:	 1   1   1   2   2
+			// 						     n=5
+			// F:	[0   1   2   3   4]
+			// t:	 1   1   1   1   1
+			//					 n=3
+			rf.nextIndex[server] = reply.XIndex
+		}
+	} else {
+		// PrevLogIndex位置不存在log
+		// L:	[0   1   2   3   4]
+		// t:	 1   1   1   2   2
+		// 				         p=4 n=5
+		// F:	[0   1   2   3]
+		// t:	 1   1   1   1
+		//					     n=4
+
+		rf.nextIndex[server] = reply.XLen
+	}
+}
+```
+
+在`Leader`为所有节点处理结束后，根据各个节点状态来判断是否该`log`达成了共识
+
+```go
+// 过半票决，成功为大多数添加日志
+for N := rf.commitIndex + 1; N < len(rf.logs); N++ {
+	agreement := 0
+	for _, matchIndex := range rf.matchIndex {
+		if matchIndex >= N && rf.logs[N].Term == rf.currentTerm {
+			agreement++
+		}
+	}
+	if agreement > len(rf.peers)/2 {
+		rf.commitIndex = N
+	}
+}
+```
+
