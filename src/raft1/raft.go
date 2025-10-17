@@ -48,8 +48,6 @@ type Raft struct {
 	status          Status
 
 	// TODO
-	//test
-	//commitlog []Log
 }
 type Status int
 
@@ -191,9 +189,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 如果term < currentTerm返回 false
 	// 如果 votedFor 为空或者为 candidateId，并且候选人的日志至少和自己一样新，那么就投票给他
 	reply.VoteGranted = false
-	reply.Term = rf.currentTerm
 
 	//Debug(dError, "S%v T%v rf.getLog(-1):%v len(rf.logs):%v", rf.me, rf.currentTerm, rf.getLog(-1), len(rf.logs))
+
+	Debug(dInfo, "S%v T%v rf.votedFor:%v  #1", rf.me, rf.currentTerm, rf.votedFor)
 
 	if args.Term > rf.currentTerm {
 		rf.updateNodeWithTerm(args.Term)
@@ -203,17 +202,24 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 		if args.LastLogTerm > rf.getLog(-1).Term {
 			// 候选人最后一条Log条目的任期号大于本地最后一条Log条目的任期号；
+			Debug(dClient, "S%v T%v @@@@@1", rf.me, rf.currentTerm)
 			reply.VoteGranted = true
 		} else if args.LastLogTerm == rf.getLog(-1).Term && args.LastLogIndex >= len(rf.logs)-1 {
 			// 或者，候选人最后一条Log条目的任期号等于本地最后一条Log条目的任期号，且候选人的Log记录长度大于等于本地Log记录的长度
+			Debug(dClient, "S%v T%v @@@@@2", rf.me, rf.currentTerm)
 			reply.VoteGranted = true
 		} else {
+			Debug(dClient, "S%v T%v @@@@@3", rf.me, rf.currentTerm)
 			reply.VoteGranted = false
 		}
 	}
 
+	Debug(dInfo, "S%v T%v rf.votedFor:%v  #2", rf.me, rf.currentTerm, rf.votedFor)
+	reply.Term = rf.currentTerm
+
 	if reply.VoteGranted {
 		rf.votedFor = args.CandidateId
+		Debug(dInfo, "S%v T%v rf.votedFor:%v  #3", rf.me, rf.currentTerm, rf.votedFor)
 		rf.resetElectionTicker()
 		Debug(dTerm, "S%v T%v success vote to S%v", rf.me, rf.currentTerm, args.CandidateId)
 		//Debug(dTerm, "S%v T%v args:%v", rf.me, rf.currentTerm, args)
@@ -497,9 +503,10 @@ func (rf *Raft) sendLogs() {
 				// 成功接收log
 				// 由于发送了所有的新log，如果成功了则该node的下一个log位置为其原有log长度+entries长度
 				// Debug(dLeader, "S%v T%v reply success from S%v", rf.me, rf.currentTerm, server)
+				Debug(dLog, "S%v T%v in S%v reply:%v", rf.me, rf.currentTerm, server, reply)
 				rf.nextIndex[server] = reply.XLen
-				rf.matchIndex[server] = reply.XLen - 1
 				if len(entries) != 0 {
+					rf.matchIndex[server] = reply.XLen - 1
 					Debug(dLog, "S%v T%v append log success in S%v,and entries:%v", rf.me, rf.currentTerm, server, len(entries))
 				}
 			} else {
@@ -723,7 +730,8 @@ func (rf *Raft) Election() {
 			if reply.Term > rf.currentTerm {
 				rf.updateNodeWithTerm(reply.Term)
 			}
-			if reply.VoteGranted == false {
+			if reply.VoteGranted == false || reply.Term != rf.currentTerm {
+				// reply.Term != rf.currentTerm 防止投票的Term与当前Term不同，但该节点收到了选票
 				rvotes++
 			} else if reply.VoteGranted == true {
 				Debug(dVote, "S%v T%v ---Vote---> S%v ", server, rf.currentTerm, rf.me)
@@ -750,12 +758,13 @@ func (rf *Raft) commitMsg() {
 
 		applyMsg := rf.createApplyMsg()
 
-		// 在发送到 applyCh 时，必须持有锁，否则在多线程情况下会造成提交顺序错误
-		rf.applyCh <- applyMsg
-
 		if rf.lastApplied == rf.commitIndex {
 			Debug(dClient, "S%v T%v Commit:%v index:%v", rf.me, rf.currentTerm, rf.getLog(rf.lastApplied), rf.lastApplied)
 		}
+
+		// 在发送到 applyCh 时，必须持有锁，否则在多线程情况下会造成提交顺序错误
+		rf.applyCh <- applyMsg
+
 	}
 
 }
@@ -774,16 +783,23 @@ func (rf *Raft) HeartBeat() {
 }
 
 func (rf *Raft) handleHeartBeat(args *AppendEntriesArgs) {
-	if args.Term > rf.currentTerm {
+	if args.Term >= rf.currentTerm {
 		// 新Term，新Leader的心跳
 		rf.updateNodeWithTerm(args.Term)
 		rf.votedFor = args.LeaderId
 		rf.resetElectionTicker()
-	} else if args.Term == rf.currentTerm {
-		if rf.votedFor == args.LeaderId {
-			rf.resetElectionTicker()
-		}
 	}
+	// 3C 5 部分无法通过
+	//if args.Term > rf.currentTerm {
+	//	// 新Term，新Leader的心跳
+	//	rf.updateNodeWithTerm(args.Term)
+	//	rf.votedFor = args.LeaderId
+	//	rf.resetElectionTicker()
+	//} else if args.Term == rf.currentTerm {
+	//	if rf.votedFor == args.LeaderId {
+	//		rf.resetElectionTicker()
+	//	}
+	//}
 }
 
 // updateNodeWithTerm update the term and change node`s new term status
