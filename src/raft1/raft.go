@@ -142,6 +142,7 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.votedFor = voteFor
 		rf.logs = logs
 	}
+	Debug(dError, "S%v T%v Reboot---", rf.me, rf.currentTerm)
 }
 
 // how many bytes in Raft's persisted log?
@@ -309,8 +310,8 @@ func (rf *Raft) handleAppendLog(args *AppendEntriesArgs, reply *AppendEntriesRep
 	}
 
 	if len(args.Entries) != 0 {
-		//Debug(dLog, "S%v T%v From S%v T%v", rf.me, rf.currentTerm, args.LeaderId, args.Term)
-		//Debug(dLog, "S%v T%v receive index:%v len(log):%v", rf.me, rf.currentTerm, args.PrevLogIndex+2, len(args.Entries))
+		Debug(dLog, "S%v T%v From S%v T%v", rf.me, rf.currentTerm, args.LeaderId, args.Term)
+		Debug(dLog, "S%v T%v receive index:%v len(log):%v", rf.me, rf.currentTerm, args.PrevLogIndex+2, len(args.Entries))
 	}
 
 	// 找不到一个和 prevLogIndex 以及 prevLogTerm 一样的索引和任期的日志条目
@@ -343,10 +344,10 @@ func (rf *Raft) handleAppendLog(args *AppendEntriesArgs, reply *AppendEntriesRep
 	// E:               3   4
 	// args.Entries != nil排除心跳
 	if isSuccess && args.Entries != nil {
-		//Debug(dTerm, "S%v T%v cut log 0 ~ %v", rf.me, rf.currentTerm, args.PrevLogIndex+1)
+		Debug(dTerm, "S%v T%v cut log 0 ~ %v", rf.me, rf.currentTerm, args.PrevLogIndex+1)
 		rf.logs = rf.logs[:args.PrevLogIndex+1]
 		rf.logs = append(rf.logs, args.Entries...)
-		//Debug(dTerm, "S%v T%v add log %v ~ %v t:%v", rf.me, rf.currentTerm, args.PrevLogIndex+2, len(rf.logs), rf.getLog(-1).Term)
+		Debug(dTerm, "S%v T%v add log %v ~ %v t:%v", rf.me, rf.currentTerm, args.PrevLogIndex+2, len(rf.logs), rf.getLog(-1).Term)
 	}
 
 	reply.XLen = len(rf.logs)
@@ -355,6 +356,7 @@ func (rf *Raft) handleAppendLog(args *AppendEntriesArgs, reply *AppendEntriesRep
 	if isSuccess && args.LeaderCommit > rf.commitIndex {
 		//  leaderCommit 或者是 上一个新条目的索引 取两者的最小值
 		rf.commitIndex = min(args.LeaderCommit, len(rf.logs)-1)
+		Debug(dVote, "S%v T%v commitIndex:%v from S%v", rf.me, rf.commitIndex, rf.commitIndex, args.LeaderId)
 	}
 
 	return isSuccess
@@ -442,7 +444,8 @@ func (rf *Raft) sendLogs() {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
 
-			if rf.status != Leader {
+			// TODO:rf.killed() ||
+			if rf.killed() || rf.status != Leader {
 				//Debug(dLeader, "S%v T%v 退出Leader处理流程 ", rf.me, rf.currentTerm)
 				return
 			}
@@ -484,7 +487,7 @@ func (rf *Raft) sendLogs() {
 			//Debug(dClient, "S%v T%v reply:%v from S%v", rf.me, rf.currentTerm, reply, server)
 
 			if reply.Term > rf.currentTerm {
-				//Debug(dLeader, "S%v T%v 过期的Leader,变为Follower ", rf.me, rf.currentTerm)
+				Debug(dLeader, "S%v T%v 过期的Leader,变为Follower ", rf.me, rf.currentTerm)
 				// 过期的Leader,更新Node的状态
 				rf.updateNodeWithTerm(reply.Term)
 				return
@@ -498,7 +501,7 @@ func (rf *Raft) sendLogs() {
 				rf.nextIndex[server] = reply.XLen
 				if len(entries) != 0 {
 					rf.matchIndex[server] = reply.XLen - 1
-					//Debug(dLog, "S%v T%v append log success in S%v,and entries:%v", rf.me, rf.currentTerm, server, len(entries))
+					Debug(dLog, "S%v T%v append log success in S%v,and entries:%v", rf.me, rf.currentTerm, server, len(entries))
 				}
 			} else {
 				// 未成功接收，则一定返回有XTerm,Xindex,Xlen
@@ -571,26 +574,26 @@ func (rf *Raft) sendLogs() {
 				if agreement > len(rf.peers)/2 {
 					rf.commitIndex = N
 					// Debug
-					//var a, b, c, d, e, f, g int
-					//for s, matchIndex := range rf.matchIndex {
-					//	if s == 0 {
-					//		a = matchIndex
-					//	} else if s == 1 {
-					//		b = matchIndex
-					//	} else if s == 2 {
-					//		c = matchIndex
-					//	} else if s == 3 {
-					//		d = matchIndex
-					//	} else if s == 4 {
-					//		e = matchIndex
-					//	} else if s == 5 {
-					//		f = matchIndex
-					//	} else if s == 6 {
-					//		g = matchIndex
-					//	}
-					//}
-					//Debug(dError, "S%v T%v %v [%v %v %v %v %v %v %v]", rf.me, rf.currentTerm, N, a, b, c, d, e, f, g)
-					//Debug(dLeader, "S%v T%v Leader commitIndex=%v", rf.me, rf.currentTerm, N)
+					var a, b, c, d, e, f, g int
+					for s, matchIndex := range rf.matchIndex {
+						if s == 0 {
+							a = matchIndex
+						} else if s == 1 {
+							b = matchIndex
+						} else if s == 2 {
+							c = matchIndex
+						} else if s == 3 {
+							d = matchIndex
+						} else if s == 4 {
+							e = matchIndex
+						} else if s == 5 {
+							f = matchIndex
+						} else if s == 6 {
+							g = matchIndex
+						}
+					}
+					Debug(dError, "S%v T%v %v [%v %v %v %v %v %v %v]", rf.me, rf.currentTerm, N, a, b, c, d, e, f, g)
+					Debug(dLeader, "S%v T%v Leader commitIndex=%v", rf.me, rf.currentTerm, N)
 					break
 				}
 			}
@@ -706,6 +709,10 @@ func (rf *Raft) Election() {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
 
+			if rf.killed() {
+				return
+			}
+
 			reply := &RequestVoteReply{}
 			//Debug(dVote, "S%v T%v ---RequestVote---> S%v", rf.me, rf.currentTerm, server)
 
@@ -731,7 +738,7 @@ func (rf *Raft) Election() {
 
 			if votes > len(rf.peers)/2 && rf.status == Candidater {
 				rf.initLeader()
-				//Debug(dLeader, "S%v T%v become Leader ,commitIndex:%v", rf.me, rf.currentTerm, rf.commitIndex)
+				Debug(dLeader, "S%v T%v become Leader ,commitIndex:%v", rf.me, rf.currentTerm, rf.commitIndex)
 			} else if rvotes > len(rf.peers)/2 {
 				rf.status = Follower
 				rf.votedFor = -1
@@ -748,7 +755,7 @@ func (rf *Raft) commitMsg() {
 
 		applyMsg := rf.createApplyMsg()
 		//if rf.lastApplied == rf.commitIndex {
-		//	Debug(dClient, "S%v T%v Commit:%v index:%v", rf.me, rf.currentTerm, rf.getLog(rf.lastApplied), rf.lastApplied)
+		Debug(dClient, "S%v T%v Commit:%v index:%v", rf.me, rf.currentTerm, rf.getLog(rf.lastApplied), rf.lastApplied)
 		//}
 
 		// 参考killed()的注释
