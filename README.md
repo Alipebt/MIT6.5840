@@ -480,13 +480,17 @@ if reprocess == false {
 ```go
 func (rf *Raft) ticker() {
 	// 初始化Ticker
-	for rf.killed() == false {
-		select {
-		case <-electionTicker.C:
-			Election()
-          resetElectionTicker()
-		case <-heartBeatTicker.C:
-			HeartBeat()
+	select {
+	case <-rf.electionTicker.C:
+		if rf.GetStatus() != Leader {
+			rf.Election()
+		}
+		rf.mu.Lock()
+		rf.resetElectionTicker()
+		rf.mu.Unlock()
+	case <-rf.heartBeatTicker.C:
+		if rf.GetStatus() == Leader {
+			rf.HeartBeat()
 		}
 	}
 }
@@ -538,10 +542,8 @@ func (rf *Raft) ticker() {
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	term := rf.currentTerm
-	isLeader := rf.status == Leader
-	if !isLeader {
-		return -1, term, isLeader
+	if rf.status != Leader {
+		return -1, rf.currentTerm, false
 	}
 
 	entry := Log{
@@ -555,7 +557,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.matchIndex[rf.me] = len(rf.logs) - 1
 
     // 返回此log下标
-	return len(rf.logs) - 1, term, isLeader
+	return len(rf.logs) - 1, rf.currentTerm, rf.status == Leader
 }
 
 ```
@@ -642,7 +644,9 @@ if reply.Success {
 	// 成功接收log
 	// 由于发送了所有的新log，如果成功了则该node的下一个log位置为log长度
 	rf.nextIndex[server] = reply.XLen
-	rf.matchIndex[server] = reply.XLen - 1
+	if len(entries) != 0 {
+		rf.matchIndex[server] = reply.XLen - 1
+	}
 } else {
 	// 未成功接收，则一定返回有XTerm,Xindex,Xlen
 	if reply.XTerm != -1 {
@@ -710,13 +714,21 @@ for N := rf.commitIndex + 1; N < len(rf.logs); N++ {
 
 ```go
 func (rf *Raft) commitMsg() {
-	if rf.lastApplied < rf.commitIndex {
+	for rf.lastApplied < rf.commitIndex {
 		rf.lastApplied++
+
 		applyMsg := rf.createApplyMsg()
-		rf.mu.Unlock()
+
+		// 参考killed()的注释
+		if rf.killed() {
+			return
+		}
+
+		// 在发送到 applyCh 时，必须持有锁，否则在多线程情况下会造成提交顺序错误
 		rf.applyCh <- applyMsg
-		rf.mu.Lock()
+
 	}
+
 }
 ```
 
@@ -733,7 +745,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 如果term < currentTerm返回 false
 	// 如果 votedFor 为空或者为 candidateId，并且候选人的日志至少和自己一样新，那么就投票给他
 	reply.VoteGranted = false
-	reply.Term = rf.currentTerm
 	if args.Term > rf.currentTerm {
 		rf.updateNodeWithTerm(args.Term)
 		reply.VoteGranted = true
@@ -742,7 +753,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		if args.LastLogTerm > rf.getLog(-1).Term {
 			// 候选人最后一条Log条目的任期号大于本地最后一条Log条目的任期号；
 			reply.VoteGranted = true
-		} else if args.LastLogTerm == rf.getLog(-1).Term && args.LastLogIndex >= len(rf.logs)-1 {
+		} else if args.LastLogTerm == rf.getLog(-1).Term &&
+        	args.LastLogIndex >= len(rf.logs)-1 {
 			// 或者，候选人最后一条Log条目的任期号等于本地最后一条Log条目的任期号，
           // 且候选人的Log记录长度大于等于本地Log记录的长度
 			reply.VoteGranted = true
@@ -750,6 +762,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.VoteGranted = false
 		}
 	}
+    
+   reply.Term = rf.currentTerm
+    
 	if reply.VoteGranted {
 		rf.votedFor = args.CandidateId
 		rf.resetElectionTicker()
@@ -757,3 +772,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 ```
 
+### Part 3C: persistence
+
+关于这部分的代码很简单，但是测试的难点是在3A和3B部分，大部分bug是由于之前代码所导致的。
+
+此外，在 `TestFigure83C` 和 `TestFigure8Unreliable3C` 可能出现 `apply error: apply out of order`，可能是由于节点`shutdown`后，它所创建的协程依然存在并执行，为了避免此情况，使用`rf.killed()`进行判断。
+
+```go
+if rf.killed() {
+   return
+}
+```
+
+3C部分就根据参考代码编写，没有什么特别需要注意的。最后在需要持久化的位置调用`persist()`，在初始化节点函数中调用`readPersist()`即可。
