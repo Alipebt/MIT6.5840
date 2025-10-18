@@ -82,7 +82,6 @@ func (rf *Raft) GetState() (int, bool) {
 // after you've implemented snapshots, pass the current snapshot
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
-	// TODO
 	// Your code here (3C).
 	// Example:
 	// w := new(bytes.Buffer)
@@ -115,7 +114,6 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// TODO
 	// Your code here (3C).
 	// Example:
 	// r := bytes.NewBuffer(data)
@@ -444,7 +442,6 @@ func (rf *Raft) sendLogs() {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
 
-			// TODO:rf.killed() ||
 			if rf.killed() || rf.status != Leader {
 				//Debug(dLeader, "S%v T%v 退出Leader处理流程 ", rf.me, rf.currentTerm)
 				return
@@ -750,18 +747,14 @@ func (rf *Raft) Election() {
 }
 
 func (rf *Raft) commitMsg() {
-	for rf.lastApplied < rf.commitIndex {
+	// 参考killed()的注释
+	for !rf.killed() && rf.lastApplied < rf.commitIndex {
 		rf.lastApplied++
 
 		applyMsg := rf.createApplyMsg()
 		//if rf.lastApplied == rf.commitIndex {
 		Debug(dClient, "S%v T%v Commit:%v index:%v", rf.me, rf.currentTerm, rf.getLog(rf.lastApplied), rf.lastApplied)
 		//}
-
-		// 参考killed()的注释
-		if rf.killed() {
-			return
-		}
 
 		// 在发送到 applyCh 时，必须持有锁，否则在多线程情况下会造成提交顺序错误
 		rf.applyCh <- applyMsg
@@ -872,7 +865,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		status:      Follower,
 	}
 
-	// TODO
 	// Your initialization code here (3A, 3B, 3C).
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
