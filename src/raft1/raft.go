@@ -33,7 +33,7 @@ type Raft struct {
 	// state a Raft server must maintain.
 	currentTerm int
 	votedFor    int
-	logs        []Log
+	logs        Logs
 
 	commitIndex int
 	lastApplied int
@@ -46,7 +46,33 @@ type Raft struct {
 	heartBeatTicker *time.Ticker
 	electionTicker  *time.Ticker
 	status          Status
+
+	lastIncludedIndex int
+	lastIncludedTrem  int
+	snapShot          []byte
 }
+
+type Logs []Log
+
+func (rf *Raft) logsLen() int {
+	return rf.lastIncludedIndex + len(rf.logs)
+}
+
+func (rf *Raft) logsSlice(start int, end int) Logs {
+	start -= rf.lastIncludedIndex
+	if start < 0 {
+		start = 0
+	}
+	end -= rf.lastIncludedIndex
+	if end < 0 {
+		end = 0
+	}
+	if end >= 0 && start <= end {
+		return rf.logs[start:end]
+	}
+	return nil
+}
+
 type Status int
 
 const (
@@ -105,7 +131,7 @@ func (rf *Raft) persist() {
 		return
 	}
 	raftState := w.Bytes()
-	rf.persister.Save(raftState, nil)
+	rf.persister.Save(raftState, rf.snapShot)
 	//Debug(dPersist, "S%v T%v Logs:%v", rf.me, rf.currentTerm, rf.logs)
 }
 
@@ -131,7 +157,7 @@ func (rf *Raft) readPersist(data []byte) {
 	d := labgob.NewDecoder(r)
 	currentTerm := -1
 	voteFor := -1
-	var logs []Log
+	var logs Logs
 	if d.Decode(&currentTerm) != nil || d.Decode(&voteFor) != nil || d.Decode(&logs) != nil {
 		//Debug(dError, "S%v RP error to read persist", rf.me)
 		return
@@ -156,7 +182,16 @@ func (rf *Raft) PersistBytes() int {
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (3D).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	Debug(dError, "S%v T%v Snapshot::", rf.me, rf.currentTerm)
 
+	rf.lastIncludedTrem = rf.getLog(index).Term
+	rf.logs = rf.logsSlice(index, rf.logsLen())
+	rf.lastIncludedIndex = index
+	rf.snapShot = snapshot
+	Debug(dSnap, "S%v T%v sIndex=%v sTrem:%v", rf.me, rf.currentTerm, rf.lastIncludedIndex, rf.lastIncludedTrem)
+	Debug(dSnap, "S%v T%v next log=%v", rf.me, rf.currentTerm, rf.logs)
 }
 
 // example RequestVote RPC arguments structure.
@@ -198,10 +233,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		if args.LastLogTerm > rf.getLog(-1).Term {
 			// 候选人最后一条Log条目的任期号大于本地最后一条Log条目的任期号；
 			reply.VoteGranted = true
-		} else if args.LastLogTerm == rf.getLog(-1).Term && args.LastLogIndex >= len(rf.logs)-1 {
+		} else if args.LastLogTerm == rf.getLog(-1).Term && args.LastLogIndex >= rf.logsLen() {
 			// 或者，候选人最后一条Log条目的任期号等于本地最后一条Log条目的任期号，且候选人的Log记录长度大于等于本地Log记录的长度
 			reply.VoteGranted = true
 		} else {
+			Debug(dVote, "S%v T%v test %v %v", rf.me, rf.currentTerm, args.LastLogIndex, rf.logsLen())
 			reply.VoteGranted = false
 		}
 	}
@@ -211,11 +247,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if reply.VoteGranted {
 		rf.votedFor = args.CandidateId
 		rf.resetElectionTicker()
-		//Debug(dTerm, "S%v T%v success vote to S%v", rf.me, rf.currentTerm, args.CandidateId)
-		//Debug(dTerm, "S%v T%v args:%v", rf.me, rf.currentTerm, args)
-		//Debug(dPersist, "S%v T%v rf.votedFor:%v args.LastLogTerm:%v", rf.me, rf.currentTerm, rf.votedFor, args.LastLogTerm)
-		//Debug(dPersist, "S%v T%v rf.getLog(-1).Term:%v args.LastLogIndex:%v", rf.me, rf.currentTerm, rf.getLog(-1).Term, args.LastLogIndex)
-		//Debug(dPersist, "S%v T%v len(rf.logs)-1:%v", rf.me, rf.currentTerm, len(rf.logs)-1)
+		Debug(dTerm, "S%v T%v success vote to S%v", rf.me, rf.currentTerm, args.CandidateId)
+		Debug(dTerm, "S%v T%v args:%v", rf.me, rf.currentTerm, args)
+		Debug(dPersist, "S%v T%v rf.votedFor:%v args.LastLogTerm:%v", rf.me, rf.currentTerm, rf.votedFor, args.LastLogTerm)
+		Debug(dPersist, "S%v T%v rf.getLog(-1).Term:%v args.LastLogIndex:%v", rf.me, rf.currentTerm, rf.getLog(-1).Term, args.LastLogIndex)
+		Debug(dPersist, "S%v T%v len(rf.logs)-1:%v", rf.me, rf.currentTerm, rf.logsLen())
 	}
 }
 
@@ -256,13 +292,92 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
+func (rf *Raft) sendInstallSnapShot(server int, args *InstallSnapShotArgs, reply *InstallSnapShotReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapShot", args, reply)
+	return ok
+}
+
+type InstallSnapShotArgs struct {
+	Term              int
+	LeaderId          int
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	Offset            int
+	Data              []byte
+	Done              bool
+}
+
+type InstallSnapShotReply struct {
+	Term int
+}
+
+func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *RequestVoteReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if args.Term < rf.currentTerm || rf.status == Leader {
+		return
+	}
+	Debug(dError, "S%v T%v InstallSnapshot::", rf.me, rf.currentTerm)
+	var snapShot []byte
+	for {
+		if args.Offset == 0 {
+			snapShot = nil
+		}
+		snapShot = append(snapShot[:args.Offset], args.Data...)
+		if args.Done {
+			break
+		}
+	}
+	if rf.lastIncludedIndex >= args.LastIncludedIndex {
+		return
+	}
+
+	oldLastIncludedIndex := rf.lastIncludedIndex
+
+	Debug(dSnap, "S%v T%v snapShot nil", rf.me, rf.currentTerm)
+	rf.snapShot = nil
+	rf.snapShot = append(rf.snapShot, snapShot...)
+	Debug(dSnap, "S%v T%v snapShot append:%v", rf.me, rf.currentTerm, len(snapShot))
+	rf.lastIncludedIndex = args.LastIncludedIndex
+	rf.lastIncludedTrem = args.LastIncludedTerm
+	Debug(dSnap, "S%v T%v SIndex:%v STerm:%v", rf.me, rf.currentTerm, rf.lastIncludedIndex, rf.lastIncludedTrem)
+
+	if args.LastIncludedIndex < oldLastIncludedIndex+len(rf.logs) && rf.getLog(args.LastIncludedIndex).Term == args.LastIncludedTerm {
+		Debug(dSnap, "S%v T%v in apply", rf.me, rf.currentTerm)
+		rf.logsSlice(args.LastIncludedIndex, oldLastIncludedIndex+len(rf.logs))
+	} else {
+		rf.logs = nil
+	}
+	reply.Term = rf.currentTerm
+
+	// 把快照发送给客户端，相当于commit到快照的index
+	applyMsg := raftapi.ApplyMsg{
+		CommandValid: false,
+		Command:      nil,
+		CommandIndex: 0,
+
+		SnapshotValid: true,
+		Snapshot:      rf.snapShot,
+		SnapshotTerm:  rf.lastIncludedTrem,
+		SnapshotIndex: rf.lastIncludedIndex,
+	}
+	rf.mu.Unlock()
+	rf.applyCh <- applyMsg
+	rf.mu.Lock()
+
+	rf.commitIndex = rf.lastIncludedIndex
+	rf.lastApplied = rf.lastIncludedIndex
+
+	Debug(dSnap, "S%v T%v now lenlog:%v", rf.me, rf.currentTerm, len(rf.logs))
+}
+
 type AppendEntriesArgs struct {
 	Term         int
 	LeaderId     int
 	PrevLogIndex int
 
 	PrevLogTerm int
-	Entries     []Log
+	Entries     Logs
 
 	LeaderCommit int
 }
@@ -307,19 +422,23 @@ func (rf *Raft) handleAppendLog(args *AppendEntriesArgs, reply *AppendEntriesRep
 		return false
 	}
 
-	if len(args.Entries) != 0 {
-		Debug(dLog, "S%v T%v From S%v T%v", rf.me, rf.currentTerm, args.LeaderId, args.Term)
-		Debug(dLog, "S%v T%v receive index:%v len(log):%v", rf.me, rf.currentTerm, args.PrevLogIndex+2, len(args.Entries))
-	}
+	//if len(args.Entries) != 0 {
+	Debug(dLog, "S%v T%v From S%v T%v", rf.me, rf.currentTerm, args.LeaderId, args.Term)
+	Debug(dLog, "S%v T%v receive index:%v len(log):%v", rf.me, rf.currentTerm, args.PrevLogIndex+1, len(args.Entries))
+	//Debug(dLog, "S%v T%v args i:%v t:%v", rf.me, rf.currentTerm, args.PrevLogIndex, args.PrevLogTerm)
+	//}
 
 	// 找不到一个和 prevLogIndex 以及 prevLogTerm 一样的索引和任期的日志条目
 	if rf.getLog(args.PrevLogIndex).Term == -1 {
 		// index冲突(无此index)
-		//Debug(dInfo, "S%v T%v index冲突(无此index)", rf.me, rf.currentTerm)
+		Debug(dInfo, "S%v T%v index冲突(无此index)", rf.me, rf.currentTerm)
 		reply.XTerm = -1
+		if rf.lastIncludedIndex == args.PrevLogIndex+1 {
+			isSuccess = true
+		}
 	} else if rf.getLog(args.PrevLogIndex).Term != args.PrevLogTerm {
 		// Term冲突
-		//Debug(dInfo, "S%v T%v Term冲突 rf.pTerm:%v args.PrevLogTerm:%v", rf.me, rf.currentTerm, rf.getLog(args.PrevLogIndex).Term, args.PrevLogTerm)
+		Debug(dInfo, "S%v T%v Term冲突 rf.pTerm:%v args.PrevLogTerm:%v", rf.me, rf.currentTerm, rf.getLog(args.PrevLogIndex).Term, args.PrevLogTerm)
 		reply.XTerm = rf.getLog(args.PrevLogIndex).Term
 	} else {
 		isSuccess = true
@@ -328,7 +447,7 @@ func (rf *Raft) handleAppendLog(args *AppendEntriesArgs, reply *AppendEntriesRep
 	// term为XTerm的第一条log, 当XTerm=-1时,XIndex一直为0
 	for index, log := range rf.logs {
 		if log.Term == reply.XTerm {
-			reply.XIndex = index
+			reply.XIndex = index + rf.lastIncludedIndex
 			break
 		}
 	}
@@ -343,18 +462,22 @@ func (rf *Raft) handleAppendLog(args *AppendEntriesArgs, reply *AppendEntriesRep
 	// args.Entries != nil排除心跳
 	if isSuccess && args.Entries != nil {
 		Debug(dTerm, "S%v T%v cut log 0 ~ %v", rf.me, rf.currentTerm, args.PrevLogIndex+1)
-		rf.logs = rf.logs[:args.PrevLogIndex+1]
+		if len(rf.logs) > 0 {
+			rf.logs = rf.logsSlice(0, args.PrevLogIndex+1)
+		}
+		//Debug(dTimer, "S%v T%v log=%v", rf.me, rf.currentTerm, rf.logs)
 		rf.logs = append(rf.logs, args.Entries...)
-		Debug(dTerm, "S%v T%v add log %v ~ %v t:%v", rf.me, rf.currentTerm, args.PrevLogIndex+2, len(rf.logs), rf.getLog(-1).Term)
+		Debug(dTerm, "S%v T%v add log %v ~ %v t:%v", rf.me, rf.currentTerm, args.PrevLogIndex+1, rf.logsLen()-1, rf.getLog(-1).Term)
+		//Debug(dTerm, "S%v T%v now log=%v", rf.me, rf.currentTerm, rf.logs)
 	}
 
-	reply.XLen = len(rf.logs)
+	reply.XLen = rf.logsLen()
 
 	// 已提交的最高日志条目的索引大于接收者的已知已提交最高日志条目的索引
 	if isSuccess && args.LeaderCommit > rf.commitIndex {
 		//  leaderCommit 或者是 上一个新条目的索引 取两者的最小值
-		rf.commitIndex = min(args.LeaderCommit, len(rf.logs)-1)
-		Debug(dVote, "S%v T%v commitIndex:%v from S%v", rf.me, rf.commitIndex, rf.commitIndex, args.LeaderId)
+		rf.commitIndex = min(args.LeaderCommit, rf.logsLen()-1)
+		//Debug(dVote, "S%v T%v commitIndex:%v from S%v", rf.me, rf.commitIndex, rf.commitIndex, args.LeaderId)
 	}
 
 	return isSuccess
@@ -366,7 +489,7 @@ func (rf *Raft) GetStatus() Status {
 	return rf.status
 }
 
-func (rf *Raft) createAppendEntriesArgs(entries []Log, peer int) *AppendEntriesArgs {
+func (rf *Raft) createAppendEntriesArgs(entries Logs, peer int) *AppendEntriesArgs {
 
 	args := &AppendEntriesArgs{
 		Term:     rf.currentTerm,
@@ -423,10 +546,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 
 	rf.logs = append(rf.logs, entry)
-	rf.matchIndex[rf.me] = len(rf.logs) - 1
+	rf.matchIndex[rf.me] = rf.logsLen() - 1
 
-	//Debug(dClient, "S%v T%v len(Logs):%v new logs:%v", rf.me, rf.currentTerm, len(rf.logs), entry)
-	return len(rf.logs) - 1, rf.currentTerm, rf.status == Leader
+	Debug(dClient, "S%v T%v len(Logs):%v new logs:%v", rf.me, rf.currentTerm, rf.logsLen(), entry)
+	return rf.logsLen() - 1, rf.currentTerm, rf.status == Leader
 }
 
 func (rf *Raft) sendLogs() {
@@ -447,11 +570,33 @@ func (rf *Raft) sendLogs() {
 				return
 			}
 
+			if rf.nextIndex[server] <= rf.lastIncludedIndex {
+				snapShotArgs := &InstallSnapShotArgs{
+					Term:              rf.currentTerm,
+					LeaderId:          rf.me,
+					LastIncludedIndex: rf.lastIncludedIndex,
+					LastIncludedTerm:  rf.lastIncludedTrem,
+					Offset:            0,
+					Data:              rf.snapShot,
+					Done:              true,
+				}
+				snapShotReply := &InstallSnapShotReply{}
+				rf.mu.Unlock()
+				ok := rf.sendInstallSnapShot(server, snapShotArgs, snapShotReply)
+				rf.mu.Lock()
+				if !ok {
+					return
+				}
+				rf.nextIndex[server] = rf.lastIncludedIndex
+				rf.matchIndex[server] = rf.lastIncludedIndex
+				Debug(dInfo, "S%v T%v rf.lastIncludedIndex:%v", server, rf.currentTerm, rf.lastIncludedIndex)
+			}
+
 			//for rf.status == Leader {
-			var entries []Log
+			var entries Logs
 			// entries=nil表示为单纯的心跳包
 			// 判断在范围内有未发送的log
-			if rf.nextIndex[server] < len(rf.logs) && rf.nextIndex[server] > 0 {
+			if rf.nextIndex[server] < rf.logsLen() && rf.nextIndex[server] > 0 {
 				// 其中‘=’的结果是 append nil，表示已将所有日志发送完毕。
 				// case 1:
 				// local: 0   1   2   3   4   5
@@ -464,16 +609,18 @@ func (rf *Raft) sendLogs() {
 				// peer:  0   1   2   3   4   5
 				// nextIndex:		             n=6
 				//entries:			nil
-				entries = append(entries, rf.logs[rf.nextIndex[server]:]...)
+				entries = append(entries, rf.logsSlice(rf.nextIndex[server], rf.logsLen())...)
 			}
 
 			//Debug(dLog2, "S%v T%v log:%v", rf.me, rf.currentTerm, rf.logs)
 			//if entries != nil {
-			//	Debug(dTimer, "S%v T%v send %v to S%v", rf.me, rf.currentTerm, rf.getLog(-1), server)
+			//Debug(dTimer, "S%v T%v send %v to S%v", rf.me, rf.currentTerm, entries, server)
 			//}
 
 			args := rf.createAppendEntriesArgs(entries, server)
 			reply := &AppendEntriesReply{}
+
+			Debug(dLeader, "S%v T%v send %v~%v", rf.me, rf.currentTerm, rf.nextIndex[server], rf.logsLen())
 
 			rf.mu.Unlock()
 			ok := rf.sendAppendEntries(server, args, reply)
@@ -481,7 +628,7 @@ func (rf *Raft) sendLogs() {
 			if !ok {
 				return
 			}
-			//Debug(dClient, "S%v T%v reply:%v from S%v", rf.me, rf.currentTerm, reply, server)
+			Debug(dClient, "S%v T%v reply:%v from S%v", rf.me, rf.currentTerm, reply, server)
 
 			if reply.Term > rf.currentTerm {
 				Debug(dLeader, "S%v T%v 过期的Leader,变为Follower ", rf.me, rf.currentTerm)
@@ -501,52 +648,56 @@ func (rf *Raft) sendLogs() {
 					Debug(dLog, "S%v T%v append log success in S%v,and entries:%v", rf.me, rf.currentTerm, server, len(entries))
 				}
 			} else {
-				// 未成功接收，则一定返回有XTerm,Xindex,Xlen
-				if reply.XTerm != -1 {
-					// -1表示PrevLogIndex位置发生冲突，即nextIndex-1或len(log)位置。表示要插入的位置的前一个位置冲突
+				if rf.nextIndex[server] > rf.lastIncludedIndex {
+					// 未成功接收，则一定返回有XTerm,Xindex,Xlen
+					if reply.XTerm != -1 {
+						// -1表示PrevLogIndex位置发生冲突，即nextIndex-1或len(log)位置。表示要插入的位置的前一个位置冲突
 
-					// leader检查自身是否有Xterm的Term
-					iXTerm := -1
-					// 倒序遍历，提取最后一个Term=XTerm的index
-					for iXTerm = len(rf.logs) - 1; iXTerm >= 0; iXTerm-- {
-						if rf.logs[iXTerm].Term == reply.XTerm {
-							break
+						// leader检查自身是否有Xterm的Term
+						iXTerm := -1
+						// 倒序遍历，提取最后一个Term=XTerm的index
+						for iXTerm = rf.logsLen(); iXTerm >= 0; iXTerm-- {
+							if rf.getLog(iXTerm).Term == reply.XTerm {
+								break
+							}
 						}
-					}
-					//Debug(dClient, "S%v T%v iXTerm:%v", rf.me, rf.currentTerm, iXTerm)
+						Debug(dClient, "S%v T%v iXTerm:%v", rf.me, rf.currentTerm, iXTerm)
 
-					if iXTerm != -1 {
-						// 存在，设nextIndex为indexLastXTerm下一个。
-						// 表示peer在XTerm期间的所有日志都已存在(对于peer，XTerm为最新Term)
-						// L:	[0   1   2   3   4]
-						// t:    1   1   1   2   2
-						//                           n=5
-						// F: 	[0   1   2   3   4]
-						// t:	 1   1   1   1   1
-						//                   n=3
-						rf.nextIndex[server] = iXTerm + 1
+						if iXTerm != -1 {
+							// 存在，设nextIndex为indexLastXTerm下一个。
+							// 表示peer在XTerm期间的所有日志都已存在(对于peer，XTerm为最新Term)
+							// L:	[0   1   2   3   4]
+							// t:    1   1   1   2   2
+							//                           n=5
+							// F: 	[0   1   2   3   4]
+							// t:	 1   1   1   1   1
+							//                   n=3
+							rf.nextIndex[server] = iXTerm + 1
+						} else {
+							// 不存在，设nextIndex为reply.XIndex
+							// L:	[0   1   2   3   4]
+							// t:	 1   1   1   2   2
+							// 						     n=5
+							// F:	[0   1   2   3   4]
+							// t:	 1   1   1   1   1
+							//					 n=3
+							rf.nextIndex[server] = reply.XIndex
+						}
 					} else {
-						// 不存在，设nextIndex为reply.XIndex
+						// PrevLogIndex位置不存在log
 						// L:	[0   1   2   3   4]
 						// t:	 1   1   1   2   2
-						// 						     n=5
-						// F:	[0   1   2   3   4]
-						// t:	 1   1   1   1   1
-						//					 n=3
-						rf.nextIndex[server] = reply.XIndex
-					}
-				} else {
-					// PrevLogIndex位置不存在log
-					// L:	[0   1   2   3   4]
-					// t:	 1   1   1   2   2
-					// 				         p=4 n=5
-					// F:	[0   1   2   3]
-					// t:	 1   1   1   1
-					//					     n=4
+						// 				         p=4 n=5
+						// F:	[0   1   2   3]
+						// t:	 1   1   1   1
+						//					     n=4
 
-					rf.nextIndex[server] = reply.XLen
+						rf.nextIndex[server] = reply.XLen
+					}
+					//Debug(dLog, "S%v T%v nextIndex处理结束 nextIndex[%v]:%v", rf.me, rf.currentTerm, server, rf.nextIndex[server])
+				} else {
+
 				}
-				//Debug(dLog, "S%v T%v nextIndex处理结束 nextIndex[%v]:%v", rf.me, rf.currentTerm, server, rf.nextIndex[server])
 			}
 
 			// 至此nextIndex处理结束。
@@ -559,10 +710,10 @@ func (rf *Raft) sendLogs() {
 			}
 
 			// 过半票决，成功为大多数添加日志
-			for N := len(rf.logs) - 1; N > rf.commitIndex; N-- {
+			for N := rf.logsLen() - 1; N > rf.commitIndex; N-- {
 				agreement := 0
 				for _, matchIndex := range rf.matchIndex {
-					if matchIndex >= N && rf.logs[N].Term == rf.currentTerm {
+					if matchIndex >= N && rf.getLog(N).Term == rf.currentTerm {
 						agreement++
 						//Debug(dCommit, "S%v T%v agreement++", rf.me, rf.currentTerm)
 					}
@@ -658,21 +809,36 @@ func (rf *Raft) getLog(index int) Log {
 		Command: nil,
 		Term:    -1,
 	}
-
-	if len(rf.logs) > 1 {
+	//Debug(dError, "S%v T%v #%v", rf.me, rf.currentTerm, rf.logsLen())
+	//Debug(dError, "S%v T%v #%v %v", rf.me, rf.currentTerm, index, rf.lastIncludedIndex)
+	if index <= -1 {
+		index = rf.logsLen() + index
+	}
+	if rf.logsLen() > 1 {
 		// 存在log[0],len==1
-		if index >= 1 && index < len(rf.logs) {
+		if index == rf.lastIncludedIndex {
+			//Debug(dLeader, "S%v T%v #%v", rf.me, rf.currentTerm, rf.lastIncludedTrem)
+			log.Term = rf.lastIncludedTrem
+		} else if index >= 1 && index < rf.logsLen() {
 			// logs:	0  1  2  3
 			// 			   1  2  3   len=4
-			log = rf.logs[index]
-		} else if index <= -1 && index > -len(rf.logs) {
+			if index-rf.lastIncludedIndex > 0 && index-rf.lastIncludedIndex < len(rf.logs) {
+				log = rf.logs[index-rf.lastIncludedIndex]
+			}
+		} else if index <= -1 && index > -rf.logsLen() {
 			// logs:	0  1  2  3
 			// 		      -3 -2 -1	 len=4
-			log = rf.logs[len(rf.logs)+index]
+			//          0  4  5  6   base=3
+			if rf.logsLen()+index-rf.lastIncludedIndex > 0 && rf.logsLen()+index-rf.lastIncludedIndex < len(rf.logs) {
+				log = rf.logs[rf.logsLen()+index-rf.lastIncludedIndex]
+			}
 		}
 	}
 	if index == 0 {
 		log = rf.logs[0]
+	}
+	if log.Term == -1 {
+		Debug(dVote, "S%v T%v rf.logsLen:%v index:%v", rf.me, rf.currentTerm, rf.logsLen(), index)
 	}
 	return log
 }
@@ -690,7 +856,7 @@ func (rf *Raft) Election() {
 	args := &RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
-		LastLogIndex: len(rf.logs) - 1,
+		LastLogIndex: rf.logsLen(),
 		LastLogTerm:  rf.getLog(-1).Term,
 	}
 
@@ -718,7 +884,7 @@ func (rf *Raft) Election() {
 			rf.mu.Lock()
 
 			if !ok {
-				//Debug(dVote, "S%v T%v ---RequestVote---> S%v failed", rf.me, rf.currentTerm, server)
+				Debug(dVote, "S%v T%v ---RequestVote---> S%v failed", rf.me, rf.currentTerm, server)
 				return
 			}
 
@@ -739,7 +905,7 @@ func (rf *Raft) Election() {
 			} else if rvotes > len(rf.peers)/2 {
 				rf.status = Follower
 				rf.votedFor = -1
-				//Debug(dLeader, "S%v T%v election failed", rf.me, rf.currentTerm)
+				Debug(dLeader, "S%v T%v election failed", rf.me, rf.currentTerm)
 			}
 
 		}(i)
@@ -748,6 +914,7 @@ func (rf *Raft) Election() {
 
 func (rf *Raft) commitMsg() {
 	// 参考killed()的注释
+	Debug(dClient, "S%v T%v lapplied:%v CIndex:%v", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
 	for !rf.killed() && rf.lastApplied < rf.commitIndex {
 		rf.lastApplied++
 
@@ -756,8 +923,10 @@ func (rf *Raft) commitMsg() {
 		Debug(dClient, "S%v T%v Commit:%v index:%v", rf.me, rf.currentTerm, rf.getLog(rf.lastApplied), rf.lastApplied)
 		//}
 
-		// 在发送到 applyCh 时，必须持有锁，否则在多线程情况下会造成提交顺序错误
+		// 如果持有锁则可能产生死锁
+		rf.mu.Unlock()
 		rf.applyCh <- applyMsg
+		rf.mu.Lock()
 
 	}
 
@@ -849,20 +1018,22 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	persister *tester.Persister, applyCh chan raftapi.ApplyMsg) raftapi.Raft {
 
 	rf := &Raft{
-		mu:          sync.Mutex{},
-		peers:       peers,
-		persister:   persister,
-		me:          me,
-		dead:        0,
-		currentTerm: 0,
-		votedFor:    -1,
-		logs:        make([]Log, 1),
-		commitIndex: 0,
-		lastApplied: 0,
-		nextIndex:   nil,
-		matchIndex:  nil,
-		applyCh:     applyCh,
-		status:      Follower,
+		mu:                sync.Mutex{},
+		peers:             peers,
+		persister:         persister,
+		me:                me,
+		dead:              0,
+		currentTerm:       0,
+		votedFor:          -1,
+		logs:              make(Logs, 1),
+		commitIndex:       0,
+		lastApplied:       0,
+		nextIndex:         nil,
+		matchIndex:        nil,
+		applyCh:           applyCh,
+		status:            Follower,
+		lastIncludedIndex: 0,
+		lastIncludedTrem:  0,
 	}
 
 	// Your initialization code here (3A, 3B, 3C).
