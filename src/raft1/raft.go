@@ -188,7 +188,7 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 
 	Debug(dError, "S%v T%v Reboot---", rf.me, rf.currentTerm)
-	Debug(dSnap, "S%v T%v #readPersist#:%v", rf.me, rf.currentTerm, rf.lastApplied)
+	//Debug(dSnap, "S%v T%v #readPersist#:%v", rf.me, rf.currentTerm, rf.lastApplied)
 
 }
 
@@ -398,26 +398,28 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *RequestVoteRep
 	}
 	reply.Term = rf.currentTerm
 
-	//// 把快照发送给客户端，相当于commit到快照的index
-	//applyMsg := raftapi.ApplyMsg{
-	//	CommandValid: false,
-	//	Command:      nil,
-	//	CommandIndex: 0,
-	//
-	//	SnapshotValid: true,
-	//	Snapshot:      rf.snapShot,
-	//	SnapshotTerm:  rf.lastIncludedTerm,
-	//	SnapshotIndex: rf.lastIncludedIndex,
-	//}
-	//rf.mu.Unlock()
-	//rf.applyCh <- applyMsg
-	//rf.mu.Lock()
+	// 把快照发送给客户端，相当于commit到快照的index
+	applyMsg := raftapi.ApplyMsg{
+		CommandValid: false,
+		Command:      nil,
+		CommandIndex: 0,
 
-	//rf.commitIndex = rf.lastIncludedIndex
-	//rf.lastApplied = rf.lastIncludedIndex
+		SnapshotValid: true,
+		Snapshot:      rf.snapShot,
+		SnapshotTerm:  rf.lastIncludedTerm,
+		SnapshotIndex: rf.lastIncludedIndex,
+	}
+	rf.mu.Unlock()
+	rf.applyCh <- applyMsg
+	rf.mu.Lock()
+
+	rf.commitIndex = rf.lastIncludedIndex
+	if rf.lastApplied < rf.lastIncludedIndex {
+		rf.lastApplied = rf.lastIncludedIndex
+	}
 
 	//Debug(dSnap, "S%v T%v now lenlog:%v", rf.me, rf.currentTerm, len(rf.logs))
-	Debug(dSnap, "S%v T%v #InstallSnapShot#:%v", rf.me, rf.currentTerm, rf.lastApplied)
+	//Debug(dSnap, "S%v T%v #InstallSnapShot#:%v", rf.me, rf.currentTerm, rf.lastApplied)
 
 	rf.persist()
 }
@@ -647,7 +649,7 @@ func (rf *Raft) sendLogs() {
 			var entries Logs
 			// entries=nil表示为单纯的心跳包
 			// 判断在范围内有未发送的log
-			if rf.nextIndex[server] < rf.logsLen() && rf.nextIndex[server] > 0 {
+			if rf.nextIndex[server] < rf.logsLen() && rf.nextIndex[server] >= 0 {
 				// 其中‘=’的结果是 append nil，表示已将所有日志发送完毕。
 				// case 1:
 				// local: 0   1   2   3   4   5
@@ -660,13 +662,19 @@ func (rf *Raft) sendLogs() {
 				// peer:  0   1   2   3   4   5
 				// nextIndex:		             n=6
 				//entries:			nil
+				if rf.nextIndex[server] == 0 && rf.logsLen() > 1 {
+					// 不加logs[0]
+					entries = append(entries, rf.getLog(rf.logsLen()))
+				}
 				entries = append(entries, rf.logsSlice(rf.nextIndex[server], rf.logsLen())...)
 			}
 
 			//Debug(dLog2, "S%v T%v log:%v", rf.me, rf.currentTerm, rf.logs)
-			//if entries != nil {
-			//Debug(dTimer, "S%v T%v send %v to S%v", rf.me, rf.currentTerm, entries, server)
-			//}
+			if entries != nil {
+				Debug(dTimer, "S%v T%v len %v to %v", rf.me, rf.currentTerm, rf.lastIncludedIndex, rf.logsLen())
+				Debug(dTimer, "S%v T%v add %v", rf.me, rf.currentTerm, rf.logs)
+				Debug(dTimer, "S%v T%v send %v to S%v", rf.me, rf.currentTerm, entries, server)
+			}
 
 			args := rf.createAppendEntriesArgs(entries, server)
 			reply := &AppendEntriesReply{}
@@ -699,56 +707,56 @@ func (rf *Raft) sendLogs() {
 					Debug(dLog, "S%v T%v append log success in S%v,and entries:%v", rf.me, rf.currentTerm, server, len(entries))
 				}
 			} else {
-				if rf.nextIndex[server] > rf.lastIncludedIndex {
-					// 未成功接收，则一定返回有XTerm,Xindex,Xlen
-					if reply.XTerm != -1 {
-						// -1表示PrevLogIndex位置发生冲突，即nextIndex-1或len(log)位置。表示要插入的位置的前一个位置冲突
+				//if rf.nextIndex[server] > rf.lastIncludedIndex {
+				// 未成功接收，则一定返回有XTerm,Xindex,Xlen
+				if reply.XTerm != -1 {
+					// -1表示PrevLogIndex位置发生冲突，即nextIndex-1或len(log)位置。表示要插入的位置的前一个位置冲突
 
-						// leader检查自身是否有Xterm的Term
-						iXTerm := -1
-						// 倒序遍历，提取最后一个Term=XTerm的index
-						for iXTerm = rf.logsLen(); iXTerm >= 0; iXTerm-- {
-							if rf.getLog(iXTerm).Term == reply.XTerm {
-								break
-							}
+					// leader检查自身是否有Xterm的Term
+					iXTerm := -1
+					// 倒序遍历，提取最后一个Term=XTerm的index
+					for iXTerm = rf.logsLen(); iXTerm >= 0; iXTerm-- {
+						if rf.getLog(iXTerm).Term == reply.XTerm {
+							break
 						}
-						Debug(dClient, "S%v T%v iXTerm:%v", rf.me, rf.currentTerm, iXTerm)
+					}
+					Debug(dClient, "S%v T%v iXTerm:%v", rf.me, rf.currentTerm, iXTerm)
 
-						if iXTerm != -1 {
-							// 存在，设nextIndex为indexLastXTerm下一个。
-							// 表示peer在XTerm期间的所有日志都已存在(对于peer，XTerm为最新Term)
-							// L:	[0   1   2   3   4]
-							// t:    1   1   1   2   2
-							//                           n=5
-							// F: 	[0   1   2   3   4]
-							// t:	 1   1   1   1   1
-							//                   n=3
-							rf.nextIndex[server] = iXTerm + 1
-						} else {
-							// 不存在，设nextIndex为reply.XIndex
-							// L:	[0   1   2   3   4]
-							// t:	 1   1   1   2   2
-							// 						     n=5
-							// F:	[0   1   2   3   4]
-							// t:	 1   1   1   1   1
-							//					 n=3
-							rf.nextIndex[server] = reply.XIndex
-						}
+					if iXTerm != -1 {
+						// 存在，设nextIndex为indexLastXTerm下一个。
+						// 表示peer在XTerm期间的所有日志都已存在(对于peer，XTerm为最新Term)
+						// L:	[0   1   2   3   4]
+						// t:    1   1   1   2   2
+						//                           n=5
+						// F: 	[0   1   2   3   4]
+						// t:	 1   1   1   1   1
+						//                   n=3
+						rf.nextIndex[server] = iXTerm + 1
 					} else {
-						// PrevLogIndex位置不存在log
+						// 不存在，设nextIndex为reply.XIndex
 						// L:	[0   1   2   3   4]
 						// t:	 1   1   1   2   2
-						// 				         p=4 n=5
-						// F:	[0   1   2   3]
-						// t:	 1   1   1   1
-						//					     n=4
-
-						rf.nextIndex[server] = reply.XLen
+						// 						     n=5
+						// F:	[0   1   2   3   4]
+						// t:	 1   1   1   1   1
+						//					 n=3
+						rf.nextIndex[server] = reply.XIndex
 					}
-					//Debug(dLog, "S%v T%v nextIndex处理结束 nextIndex[%v]:%v", rf.me, rf.currentTerm, server, rf.nextIndex[server])
 				} else {
+					// PrevLogIndex位置不存在log
+					// L:	[0   1   2   3   4]
+					// t:	 1   1   1   2   2
+					// 				         p=4 n=5
+					// F:	[0   1   2   3]
+					// t:	 1   1   1   1
+					//					     n=4
 
+					rf.nextIndex[server] = reply.XLen
 				}
+				//Debug(dLog, "S%v T%v nextIndex处理结束 nextIndex[%v]:%v", rf.me, rf.currentTerm, server, rf.nextIndex[server])
+				//} else {
+				//
+				//}
 			}
 
 			// 至此nextIndex处理结束。
@@ -868,12 +876,12 @@ func (rf *Raft) getLog(index int) Log {
 	if rf.logsLen() > 1 {
 		// 存在log[0],len==1
 		if index == rf.lastIncludedIndex {
-			//Debug(dLeader, "S%v T%v #%v", rf.me, rf.currentTerm, rf.lastIncludedTrem)
+			//Debug(dLeader, "S%v T%v #%v", rf.me, rf.currentTerm, rf.lastIncludedTerm)
 			log.Term = rf.lastIncludedTerm
-		} else if index >= 1 && index < rf.logsLen() {
+		} else if index >= 0 && index < rf.logsLen() {
 			// logs:	0  1  2  3
 			// 			   1  2  3   len=4
-			if index-rf.lastIncludedIndex > 0 && index-rf.lastIncludedIndex < len(rf.logs) {
+			if index-rf.lastIncludedIndex >= 0 && index-rf.lastIncludedIndex < len(rf.logs) {
 				log = rf.logs[index-rf.lastIncludedIndex]
 			}
 		} else if index <= -1 && index > -rf.logsLen() {
@@ -885,7 +893,7 @@ func (rf *Raft) getLog(index int) Log {
 			}
 		}
 	}
-	if index == 0 {
+	if index == 0 && len(rf.logs) != 0 {
 		log = rf.logs[0]
 	}
 	if log.Term == -1 {
@@ -987,15 +995,15 @@ func (rf *Raft) commitMsg() {
 func (rf *Raft) HeartBeat() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	Debug(dSnap, "S%v T%v #HeartBeat-1#:%v", rf.me, rf.currentTerm, rf.lastApplied)
+	//Debug(dSnap, "S%v T%v #HeartBeat-1#:%v", rf.me, rf.currentTerm, rf.lastApplied)
 
 	rf.sendLogs()
-	Debug(dSnap, "S%v T%v #HeartBeat0#:%v", rf.me, rf.currentTerm, rf.lastApplied)
+	//Debug(dSnap, "S%v T%v #HeartBeat0#:%v", rf.me, rf.currentTerm, rf.lastApplied)
 
 	rf.commitMsg()
-	Debug(dSnap, "S%v T%v #HeartBeat1#:%v", rf.me, rf.currentTerm, rf.lastApplied)
+	//Debug(dSnap, "S%v T%v #HeartBeat1#:%v", rf.me, rf.currentTerm, rf.lastApplied)
 	rf.persist()
-	Debug(dSnap, "S%v T%v #HeartBeat2s#:%v", rf.me, rf.currentTerm, rf.lastApplied)
+	//Debug(dSnap, "S%v T%v #HeartBeat2s#:%v", rf.me, rf.currentTerm, rf.lastApplied)
 
 }
 
@@ -1053,9 +1061,30 @@ func (rf *Raft) initLeader() {
 			rf.nextIndex = append(rf.nextIndex, len(rf.logs))
 			rf.matchIndex = append(rf.matchIndex, 0)
 		} else {
-			rf.nextIndex[s] = len(rf.logs)
+			rf.nextIndex[s] = rf.logsLen()
 			rf.matchIndex[s] = 0
 		}
+		// Debug
+		var a, b, c, d, e, f, g int
+		for s, nextIndex := range rf.nextIndex {
+			if s == 0 {
+				a = nextIndex
+			} else if s == 1 {
+				b = nextIndex
+			} else if s == 2 {
+				c = nextIndex
+			} else if s == 3 {
+				d = nextIndex
+			} else if s == 4 {
+				e = nextIndex
+			} else if s == 5 {
+				f = nextIndex
+			} else if s == 6 {
+				g = nextIndex
+			}
+		}
+		Debug(dError, "S%v T%v %v next [%v %v %v %v %v %v %v]", rf.me, rf.currentTerm, s, a, b, c, d, e, f, g)
+		Debug(dLeader, "S%v T%v Leader commitIndex=%v", rf.me, rf.currentTerm, s)
 	}
 }
 
