@@ -187,7 +187,7 @@ func (rf *Raft) readPersist(data []byte) {
 		//rf.commitIndex = lastIncludedIndex
 	}
 
-	Debug(dError, "S%v T%v Reboot---", rf.me, rf.currentTerm)
+	//Debug(dError, "S%v T%v Reboot---", rf.me, rf.currentTerm)
 	//Debug(dSnap, "S%v T%v #readPersist#:%v", rf.me, rf.currentTerm, rf.lastApplied)
 
 }
@@ -214,7 +214,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (3D).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	Debug(dError, "S%v T%v Snapshot::", rf.me, rf.currentTerm)
+	//Debug(dError, "S%v T%v Snapshot::", rf.me, rf.currentTerm)
 	if index < rf.lastIncludedIndex {
 		return
 	}
@@ -223,8 +223,8 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.logs = rf.logsSlice(index, rf.logsLen())
 	rf.lastIncludedIndex = index
 	rf.snapShot = snapshot
-	Debug(dSnap, "S%v T%v sIndex=%v sTrem:%v", rf.me, rf.currentTerm, rf.lastIncludedIndex, rf.lastIncludedTerm)
-	Debug(dSnap, "S%v T%v next log=%v", rf.me, rf.currentTerm, rf.logs)
+	//Debug(dSnap, "S%v T%v sIndex=%v sTrem:%v", rf.me, rf.currentTerm, rf.lastIncludedIndex, rf.lastIncludedTerm)
+	//Debug(dSnap, "S%v T%v next log=%v", rf.me, rf.currentTerm, rf.logs)
 	rf.persist()
 }
 
@@ -271,7 +271,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			// 或者，候选人最后一条Log条目的任期号等于本地最后一条Log条目的任期号，且候选人的Log记录长度大于等于本地Log记录的长度
 			reply.VoteGranted = true
 		} else {
-			Debug(dVote, "S%v T%v test %v %v", rf.me, rf.currentTerm, args.LastLogIndex, rf.logsLen())
+			//Debug(dVote, "S%v T%v test %v %v", rf.me, rf.currentTerm, args.LastLogIndex, rf.logsLen())
 			reply.VoteGranted = false
 		}
 	}
@@ -281,11 +281,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if reply.VoteGranted {
 		rf.votedFor = args.CandidateId
 		rf.resetElectionTicker()
-		Debug(dTerm, "S%v T%v success vote to S%v", rf.me, rf.currentTerm, args.CandidateId)
-		Debug(dTerm, "S%v T%v args:%v", rf.me, rf.currentTerm, args)
-		Debug(dPersist, "S%v T%v rf.votedFor:%v args.LastLogTerm:%v", rf.me, rf.currentTerm, rf.votedFor, args.LastLogTerm)
-		Debug(dPersist, "S%v T%v rf.getLog(-1).Term:%v args.LastLogIndex:%v", rf.me, rf.currentTerm, rf.getLog(-1).Term, args.LastLogIndex)
-		Debug(dPersist, "S%v T%v len(rf.logs)-1:%v", rf.me, rf.currentTerm, rf.logsLen())
+		//Debug(dTerm, "S%v T%v success vote to S%v", rf.me, rf.currentTerm, args.CandidateId)
+		//Debug(dTerm, "S%v T%v args:%v", rf.me, rf.currentTerm, args)
+		//Debug(dPersist, "S%v T%v rf.votedFor:%v args.LastLogTerm:%v", rf.me, rf.currentTerm, rf.votedFor, args.LastLogTerm)
+		//Debug(dPersist, "S%v T%v rf.getLog(-1).Term:%v args.LastLogIndex:%v", rf.me, rf.currentTerm, rf.getLog(-1).Term, args.LastLogIndex)
+		//Debug(dPersist, "S%v T%v len(rf.logs)-1:%v", rf.me, rf.currentTerm, rf.logsLen())
 	}
 }
 
@@ -351,7 +351,7 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *RequestVoteRep
 	if args.Term < rf.currentTerm || rf.status == Leader {
 		return
 	}
-	Debug(dError, "S%v T%v InstallSnapshot::", rf.me, rf.currentTerm)
+	//Debug(dError, "S%v T%v InstallSnapshot::", rf.me, rf.currentTerm)
 	var snapShot []byte
 	for {
 		if args.Offset == 0 {
@@ -368,16 +368,16 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *RequestVoteRep
 
 	oldLastIncludedIndex := rf.lastIncludedIndex
 
-	Debug(dSnap, "S%v T%v snapShot nil", rf.me, rf.currentTerm)
+	//Debug(dSnap, "S%v T%v snapShot nil", rf.me, rf.currentTerm)
 	rf.snapShot = nil
 	rf.snapShot = append(rf.snapShot, snapShot...)
-	Debug(dSnap, "S%v T%v snapShot append:%v", rf.me, rf.currentTerm, len(snapShot))
+	//Debug(dSnap, "S%v T%v snapShot append:%v", rf.me, rf.currentTerm, len(snapShot))
 	rf.lastIncludedIndex = args.LastIncludedIndex
 	rf.lastIncludedTerm = args.LastIncludedTerm
-	Debug(dSnap, "S%v T%v SIndex:%v STerm:%v", rf.me, rf.currentTerm, rf.lastIncludedIndex, rf.lastIncludedTerm)
+	//Debug(dSnap, "S%v T%v SIndex:%v STerm:%v", rf.me, rf.currentTerm, rf.lastIncludedIndex, rf.lastIncludedTerm)
 
 	if args.LastIncludedIndex < oldLastIncludedIndex+len(rf.logs) && rf.getLog(args.LastIncludedIndex).Term == args.LastIncludedTerm {
-		Debug(dSnap, "S%v T%v in apply", rf.me, rf.currentTerm)
+		//Debug(dSnap, "S%v T%v in apply", rf.me, rf.currentTerm)
 		rf.logsSlice(args.LastIncludedIndex, oldLastIncludedIndex+len(rf.logs))
 	} else {
 		rf.logs = nil
@@ -462,22 +462,22 @@ func (rf *Raft) handleAppendLog(args *AppendEntriesArgs, reply *AppendEntriesRep
 	}
 
 	//if len(args.Entries) != 0 {
-	Debug(dLog, "S%v T%v From S%v T%v", rf.me, rf.currentTerm, args.LeaderId, args.Term)
-	Debug(dLog, "S%v T%v receive index:%v len(log):%v", rf.me, rf.currentTerm, args.PrevLogIndex+1, len(args.Entries))
+	//Debug(dLog, "S%v T%v From S%v T%v", rf.me, rf.currentTerm, args.LeaderId, args.Term)
+	//Debug(dLog, "S%v T%v receive index:%v len(log):%v", rf.me, rf.currentTerm, args.PrevLogIndex+1, len(args.Entries))
 	//Debug(dLog, "S%v T%v args i:%v t:%v", rf.me, rf.currentTerm, args.PrevLogIndex, args.PrevLogTerm)
 	//}
 
 	// 找不到一个和 prevLogIndex 以及 prevLogTerm 一样的索引和任期的日志条目
 	if rf.getLog(args.PrevLogIndex).Term == -1 {
 		// index冲突(无此index)
-		Debug(dInfo, "S%v T%v index冲突(无此index)", rf.me, rf.currentTerm)
+		//Debug(dInfo, "S%v T%v index冲突(无此index)", rf.me, rf.currentTerm)
 		reply.XTerm = -1
 		if rf.lastIncludedIndex == args.PrevLogIndex+1 {
 			isSuccess = true
 		}
 	} else if rf.getLog(args.PrevLogIndex).Term != args.PrevLogTerm {
 		// Term冲突
-		Debug(dInfo, "S%v T%v Term冲突 rf.pTerm:%v args.PrevLogTerm:%v", rf.me, rf.currentTerm, rf.getLog(args.PrevLogIndex).Term, args.PrevLogTerm)
+		//Debug(dInfo, "S%v T%v Term冲突 rf.pTerm:%v args.PrevLogTerm:%v", rf.me, rf.currentTerm, rf.getLog(args.PrevLogIndex).Term, args.PrevLogTerm)
 		reply.XTerm = rf.getLog(args.PrevLogIndex).Term
 	} else {
 		isSuccess = true
@@ -500,14 +500,14 @@ func (rf *Raft) handleAppendLog(args *AppendEntriesArgs, reply *AppendEntriesRep
 	// E:               3   4
 	// args.Entries != nil排除心跳
 	if isSuccess && args.Entries != nil {
-		Debug(dTerm, "S%v T%v cut log 0 ~ %v", rf.me, rf.currentTerm, args.PrevLogIndex+1)
+		//Debug(dTerm, "S%v T%v cut log 0 ~ %v", rf.me, rf.currentTerm, args.PrevLogIndex+1)
 		if len(rf.logs) > 0 {
 			rf.logs = rf.logsSlice(0, args.PrevLogIndex+1)
 		}
 		//Debug(dTimer, "S%v T%v log=%v", rf.me, rf.currentTerm, rf.logs)
 		rf.logs = append(rf.logs, args.Entries...)
-		Debug(dTerm, "S%v T%v add log %v ~ %v t:%v", rf.me, rf.currentTerm, args.PrevLogIndex+1, rf.logsLen()-1, rf.getLog(-1).Term)
-		Debug(dTerm, "S%v T%v now log=%v", rf.me, rf.currentTerm, rf.logs)
+		//Debug(dTerm, "S%v T%v add log %v ~ %v t:%v", rf.me, rf.currentTerm, args.PrevLogIndex+1, rf.logsLen()-1, rf.getLog(-1).Term)
+		//Debug(dTerm, "S%v T%v now log=%v", rf.me, rf.currentTerm, rf.logs)
 	}
 
 	reply.XLen = rf.logsLen()
@@ -583,7 +583,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.logs = append(rf.logs, entry)
 	rf.matchIndex[rf.me] = rf.logsLen() - 1
 
-	Debug(dClient, "S%v T%v len(Logs):%v new logs:%v", rf.me, rf.currentTerm, rf.logsLen(), entry)
+	//Debug(dClient, "S%v T%v len(Logs):%v new logs:%v", rf.me, rf.currentTerm, rf.logsLen(), entry)
 	return rf.logsLen() - 1, rf.currentTerm, rf.status == Leader
 }
 
@@ -624,7 +624,7 @@ func (rf *Raft) sendLogs() {
 				}
 				rf.nextIndex[server] = rf.lastIncludedIndex
 				rf.matchIndex[server] = rf.lastIncludedIndex
-				Debug(dInfo, "S%v T%v rf.lastIncludedIndex:%v", server, rf.currentTerm, rf.lastIncludedIndex)
+				//Debug(dInfo, "S%v T%v rf.lastIncludedIndex:%v", server, rf.currentTerm, rf.lastIncludedIndex)
 			}
 
 			//for rf.status == Leader {
@@ -653,15 +653,15 @@ func (rf *Raft) sendLogs() {
 
 			//Debug(dLog2, "S%v T%v log:%v", rf.me, rf.currentTerm, rf.logs)
 			if entries != nil {
-				Debug(dTimer, "S%v T%v len %v to %v", rf.me, rf.currentTerm, rf.lastIncludedIndex, rf.logsLen())
-				Debug(dTimer, "S%v T%v add %v", rf.me, rf.currentTerm, rf.logs)
-				Debug(dTimer, "S%v T%v send %v to S%v", rf.me, rf.currentTerm, entries, server)
+				//Debug(dTimer, "S%v T%v len %v to %v", rf.me, rf.currentTerm, rf.lastIncludedIndex, rf.logsLen())
+				//Debug(dTimer, "S%v T%v add %v", rf.me, rf.currentTerm, rf.logs)
+				//Debug(dTimer, "S%v T%v send %v to S%v", rf.me, rf.currentTerm, entries, server)
 			}
 
 			args := rf.createAppendEntriesArgs(entries, server)
 			reply := &AppendEntriesReply{}
 
-			Debug(dLeader, "S%v T%v send %v~%v", rf.me, rf.currentTerm, rf.nextIndex[server], rf.logsLen())
+			//Debug(dLeader, "S%v T%v send %v~%v", rf.me, rf.currentTerm, rf.nextIndex[server], rf.logsLen())
 
 			rf.mu.Unlock()
 			ok := rf.sendAppendEntries(server, args, reply)
@@ -669,10 +669,10 @@ func (rf *Raft) sendLogs() {
 			if !ok {
 				return
 			}
-			Debug(dClient, "S%v T%v reply:%v from S%v", rf.me, rf.currentTerm, reply, server)
+			//Debug(dClient, "S%v T%v reply:%v from S%v", rf.me, rf.currentTerm, reply, server)
 
 			if reply.Term > rf.currentTerm {
-				Debug(dLeader, "S%v T%v 过期的Leader,变为Follower ", rf.me, rf.currentTerm)
+				//Debug(dLeader, "S%v T%v 过期的Leader,变为Follower ", rf.me, rf.currentTerm)
 				// 过期的Leader,更新Node的状态
 				rf.updateNodeWithTerm(reply.Term)
 				return
@@ -685,7 +685,7 @@ func (rf *Raft) sendLogs() {
 				//Debug(dLog, "S%v T%v in S%v reply:%v", rf.me, rf.currentTerm, server, reply)
 				rf.nextIndex[server] = reply.XLen
 				rf.matchIndex[server] = reply.XLen - 1
-				Debug(dLog, "S%v T%v append log success in S%v,and entries:%v", rf.me, rf.currentTerm, server, len(entries))
+				//Debug(dLog, "S%v T%v append log success in S%v,and entries:%v", rf.me, rf.currentTerm, server, len(entries))
 			} else {
 				//if rf.nextIndex[server] > rf.lastIncludedIndex {
 				// 未成功接收，则一定返回有XTerm,Xindex,Xlen
@@ -700,7 +700,7 @@ func (rf *Raft) sendLogs() {
 							break
 						}
 					}
-					Debug(dClient, "S%v T%v iXTerm:%v", rf.me, rf.currentTerm, iXTerm)
+					//Debug(dClient, "S%v T%v iXTerm:%v", rf.me, rf.currentTerm, iXTerm)
 
 					if iXTerm != -1 {
 						// 存在，设nextIndex为indexLastXTerm下一个。
@@ -761,26 +761,26 @@ func (rf *Raft) sendLogs() {
 				if agreement > len(rf.peers)/2 {
 					rf.commitIndex = N
 					// Debug
-					var a, b, c, d, e, f, g int
-					for s, matchIndex := range rf.matchIndex {
-						if s == 0 {
-							a = matchIndex
-						} else if s == 1 {
-							b = matchIndex
-						} else if s == 2 {
-							c = matchIndex
-						} else if s == 3 {
-							d = matchIndex
-						} else if s == 4 {
-							e = matchIndex
-						} else if s == 5 {
-							f = matchIndex
-						} else if s == 6 {
-							g = matchIndex
-						}
-					}
-					Debug(dError, "S%v T%v %v [%v %v %v %v %v %v %v]", rf.me, rf.currentTerm, N, a, b, c, d, e, f, g)
-					Debug(dLeader, "S%v T%v Leader commitIndex=%v", rf.me, rf.currentTerm, N)
+					//var a, b, c, d, e, f, g int
+					//for s, matchIndex := range rf.matchIndex {
+					//	if s == 0 {
+					//		a = matchIndex
+					//	} else if s == 1 {
+					//		b = matchIndex
+					//	} else if s == 2 {
+					//		c = matchIndex
+					//	} else if s == 3 {
+					//		d = matchIndex
+					//	} else if s == 4 {
+					//		e = matchIndex
+					//	} else if s == 5 {
+					//		f = matchIndex
+					//	} else if s == 6 {
+					//		g = matchIndex
+					//	}
+					//}
+					//Debug(dError, "S%v T%v %v [%v %v %v %v %v %v %v]", rf.me, rf.currentTerm, N, a, b, c, d, e, f, g)
+					//Debug(dLeader, "S%v T%v Leader commitIndex=%v", rf.me, rf.currentTerm, N)
 					break
 				}
 			}
@@ -867,7 +867,7 @@ func (rf *Raft) getLog(index int) Log {
 		log = rf.logs[0]
 	}
 	if log.Term == -1 {
-		Debug(dVote, "S%v T%v rf.logsLen:%v index:%v", rf.me, rf.currentTerm, rf.logsLen(), index)
+		//Debug(dVote, "S%v T%v rf.logsLen:%v index:%v", rf.me, rf.currentTerm, rf.logsLen(), index)
 	}
 	return log
 }
@@ -889,7 +889,7 @@ func (rf *Raft) Election() {
 		LastLogTerm:  rf.getLog(-1).Term,
 	}
 
-	Debug(dInfo, "S%v T%v Election", rf.me, rf.currentTerm)
+	//Debug(dInfo, "S%v T%v Election", rf.me, rf.currentTerm)
 
 	for i, _ := range rf.peers {
 		if i == rf.me {
@@ -913,7 +913,7 @@ func (rf *Raft) Election() {
 			rf.mu.Lock()
 
 			if !ok {
-				Debug(dVote, "S%v T%v ---RequestVote---> S%v failed", rf.me, rf.currentTerm, server)
+				//Debug(dVote, "S%v T%v ---RequestVote---> S%v failed", rf.me, rf.currentTerm, server)
 				return
 			}
 
@@ -924,17 +924,17 @@ func (rf *Raft) Election() {
 				// reply.Term != rf.currentTerm 防止投票的Term与当前Term不同，但该节点收到了选票
 				rvotes++
 			} else if reply.VoteGranted == true {
-				Debug(dVote, "S%v T%v ---Vote---> S%v ", server, rf.currentTerm, rf.me)
+				//Debug(dVote, "S%v T%v ---Vote---> S%v ", server, rf.currentTerm, rf.me)
 				votes++
 			}
 
 			if votes > len(rf.peers)/2 && rf.status == Candidater {
 				rf.initLeader()
-				Debug(dLeader, "S%v T%v become Leader ,commitIndex:%v", rf.me, rf.currentTerm, rf.commitIndex)
+				//Debug(dLeader, "S%v T%v become Leader ,commitIndex:%v", rf.me, rf.currentTerm, rf.commitIndex)
 			} else if rvotes > len(rf.peers)/2 {
 				rf.status = Follower
 				rf.votedFor = -1
-				Debug(dLeader, "S%v T%v election failed", rf.me, rf.currentTerm)
+				//Debug(dLeader, "S%v T%v election failed", rf.me, rf.currentTerm)
 			}
 
 		}(i)
@@ -943,13 +943,13 @@ func (rf *Raft) Election() {
 
 func (rf *Raft) commitMsg() {
 	// 参考killed()的注释
-	Debug(dClient, "S%v T%v lapplied:%v CIndex:%v", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
+	//Debug(dClient, "S%v T%v lapplied:%v CIndex:%v", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
 	for !rf.killed() && rf.lastApplied < rf.commitIndex {
 		rf.lastApplied++
 
 		applyMsg := rf.createApplyMsg()
 		//if rf.lastApplied == rf.commitIndex {
-		Debug(dClient, "S%v T%v Commit:%v index:%v", rf.me, rf.currentTerm, rf.getLog(rf.lastApplied), rf.lastApplied)
+		//Debug(dClient, "S%v T%v Commit:%v index:%v", rf.me, rf.currentTerm, rf.getLog(rf.lastApplied), rf.lastApplied)
 		//}
 
 		// 如果持有锁则可能产生死锁
@@ -1024,26 +1024,26 @@ func (rf *Raft) initLeader() {
 			rf.matchIndex[s] = 0
 		}
 		// Debug
-		var a, b, c, d, e, f, g int
-		for s, nextIndex := range rf.nextIndex {
-			if s == 0 {
-				a = nextIndex
-			} else if s == 1 {
-				b = nextIndex
-			} else if s == 2 {
-				c = nextIndex
-			} else if s == 3 {
-				d = nextIndex
-			} else if s == 4 {
-				e = nextIndex
-			} else if s == 5 {
-				f = nextIndex
-			} else if s == 6 {
-				g = nextIndex
-			}
-		}
-		Debug(dError, "S%v T%v %v next [%v %v %v %v %v %v %v]", rf.me, rf.currentTerm, s, a, b, c, d, e, f, g)
-		Debug(dLeader, "S%v T%v Leader commitIndex=%v", rf.me, rf.currentTerm, s)
+		//var a, b, c, d, e, f, g int
+		//for s, nextIndex := range rf.nextIndex {
+		//	if s == 0 {
+		//		a = nextIndex
+		//	} else if s == 1 {
+		//		b = nextIndex
+		//	} else if s == 2 {
+		//		c = nextIndex
+		//	} else if s == 3 {
+		//		d = nextIndex
+		//	} else if s == 4 {
+		//		e = nextIndex
+		//	} else if s == 5 {
+		//		f = nextIndex
+		//	} else if s == 6 {
+		//		g = nextIndex
+		//	}
+		//}
+		//Debug(dError, "S%v T%v %v next [%v %v %v %v %v %v %v]", rf.me, rf.currentTerm, s, a, b, c, d, e, f, g)
+		//Debug(dLeader, "S%v T%v Leader commitIndex=%v", rf.me, rf.currentTerm, s)
 	}
 }
 
