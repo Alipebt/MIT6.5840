@@ -48,7 +48,7 @@ type Raft struct {
 	status          Status
 
 	lastIncludedIndex int
-	lastIncludedTrem  int
+	lastIncludedTerm  int
 	snapShot          []byte
 }
 
@@ -130,6 +130,18 @@ func (rf *Raft) persist() {
 	if ok != nil {
 		return
 	}
+	//ok = e.Encode(rf.snapShot)
+	//if ok != nil {
+	//	return
+	//}
+	ok = e.Encode(rf.lastIncludedIndex)
+	if ok != nil {
+		return
+	}
+	ok = e.Encode(rf.lastIncludedTerm)
+	if ok != nil {
+		return
+	}
 	raftState := w.Bytes()
 	rf.persister.Save(raftState, rf.snapShot)
 	//Debug(dPersist, "S%v T%v Logs:%v", rf.me, rf.currentTerm, rf.logs)
@@ -158,15 +170,47 @@ func (rf *Raft) readPersist(data []byte) {
 	currentTerm := -1
 	voteFor := -1
 	var logs Logs
-	if d.Decode(&currentTerm) != nil || d.Decode(&voteFor) != nil || d.Decode(&logs) != nil {
+	lastIncludedIndex := 0
+	lastIncludedTerm := 0
+	if d.Decode(&currentTerm) != nil || d.Decode(&voteFor) != nil || d.Decode(&logs) != nil ||
+		d.Decode(&lastIncludedIndex) != nil || d.Decode(&lastIncludedTerm) != nil {
 		//Debug(dError, "S%v RP error to read persist", rf.me)
 		return
 	} else {
 		rf.currentTerm = currentTerm
 		rf.votedFor = voteFor
 		rf.logs = logs
+		//rf.snapShot = snapShot
+		rf.lastIncludedIndex = lastIncludedIndex
+		rf.lastIncludedTerm = lastIncludedTerm
+		rf.lastApplied = lastIncludedIndex
+		//rf.commitIndex = lastIncludedIndex
 	}
+
 	Debug(dError, "S%v T%v Reboot---", rf.me, rf.currentTerm)
+	Debug(dSnap, "S%v T%v #readPersist#:%v", rf.me, rf.currentTerm, rf.lastApplied)
+
+}
+
+func (rf *Raft) readSnapShot(data []byte) {
+	if data == nil {
+		return
+	}
+	rf.snapShot = data
+	//// 把快照发送给客户端，相当于commit到快照的index
+	//applyMsg := raftapi.ApplyMsg{
+	//	CommandValid: false,
+	//	Command:      nil,
+	//	CommandIndex: 0,
+	//
+	//	SnapshotValid: true,
+	//	Snapshot:      rf.snapShot,
+	//	SnapshotTerm:  rf.lastIncludedTerm,
+	//	SnapshotIndex: rf.lastIncludedIndex,
+	//}
+	////rf.mu.Unlock()
+	//rf.applyCh <- applyMsg
+	////rf.mu.Lock()
 }
 
 // how many bytes in Raft's persisted log?
@@ -185,13 +229,17 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	Debug(dError, "S%v T%v Snapshot::", rf.me, rf.currentTerm)
+	if index < rf.lastIncludedIndex {
+		return
+	}
 
-	rf.lastIncludedTrem = rf.getLog(index).Term
+	rf.lastIncludedTerm = rf.getLog(index).Term
 	rf.logs = rf.logsSlice(index, rf.logsLen())
 	rf.lastIncludedIndex = index
 	rf.snapShot = snapshot
-	Debug(dSnap, "S%v T%v sIndex=%v sTrem:%v", rf.me, rf.currentTerm, rf.lastIncludedIndex, rf.lastIncludedTrem)
+	Debug(dSnap, "S%v T%v sIndex=%v sTrem:%v", rf.me, rf.currentTerm, rf.lastIncludedIndex, rf.lastIncludedTerm)
 	Debug(dSnap, "S%v T%v next log=%v", rf.me, rf.currentTerm, rf.logs)
+	rf.persist()
 }
 
 // example RequestVote RPC arguments structure.
@@ -339,8 +387,8 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *RequestVoteRep
 	rf.snapShot = append(rf.snapShot, snapShot...)
 	Debug(dSnap, "S%v T%v snapShot append:%v", rf.me, rf.currentTerm, len(snapShot))
 	rf.lastIncludedIndex = args.LastIncludedIndex
-	rf.lastIncludedTrem = args.LastIncludedTerm
-	Debug(dSnap, "S%v T%v SIndex:%v STerm:%v", rf.me, rf.currentTerm, rf.lastIncludedIndex, rf.lastIncludedTrem)
+	rf.lastIncludedTerm = args.LastIncludedTerm
+	Debug(dSnap, "S%v T%v SIndex:%v STerm:%v", rf.me, rf.currentTerm, rf.lastIncludedIndex, rf.lastIncludedTerm)
 
 	if args.LastIncludedIndex < oldLastIncludedIndex+len(rf.logs) && rf.getLog(args.LastIncludedIndex).Term == args.LastIncludedTerm {
 		Debug(dSnap, "S%v T%v in apply", rf.me, rf.currentTerm)
@@ -350,25 +398,28 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *RequestVoteRep
 	}
 	reply.Term = rf.currentTerm
 
-	// 把快照发送给客户端，相当于commit到快照的index
-	applyMsg := raftapi.ApplyMsg{
-		CommandValid: false,
-		Command:      nil,
-		CommandIndex: 0,
+	//// 把快照发送给客户端，相当于commit到快照的index
+	//applyMsg := raftapi.ApplyMsg{
+	//	CommandValid: false,
+	//	Command:      nil,
+	//	CommandIndex: 0,
+	//
+	//	SnapshotValid: true,
+	//	Snapshot:      rf.snapShot,
+	//	SnapshotTerm:  rf.lastIncludedTerm,
+	//	SnapshotIndex: rf.lastIncludedIndex,
+	//}
+	//rf.mu.Unlock()
+	//rf.applyCh <- applyMsg
+	//rf.mu.Lock()
 
-		SnapshotValid: true,
-		Snapshot:      rf.snapShot,
-		SnapshotTerm:  rf.lastIncludedTrem,
-		SnapshotIndex: rf.lastIncludedIndex,
-	}
-	rf.mu.Unlock()
-	rf.applyCh <- applyMsg
-	rf.mu.Lock()
+	//rf.commitIndex = rf.lastIncludedIndex
+	//rf.lastApplied = rf.lastIncludedIndex
 
-	rf.commitIndex = rf.lastIncludedIndex
-	rf.lastApplied = rf.lastIncludedIndex
+	//Debug(dSnap, "S%v T%v now lenlog:%v", rf.me, rf.currentTerm, len(rf.logs))
+	Debug(dSnap, "S%v T%v #InstallSnapShot#:%v", rf.me, rf.currentTerm, rf.lastApplied)
 
-	Debug(dSnap, "S%v T%v now lenlog:%v", rf.me, rf.currentTerm, len(rf.logs))
+	rf.persist()
 }
 
 type AppendEntriesArgs struct {
@@ -468,7 +519,7 @@ func (rf *Raft) handleAppendLog(args *AppendEntriesArgs, reply *AppendEntriesRep
 		//Debug(dTimer, "S%v T%v log=%v", rf.me, rf.currentTerm, rf.logs)
 		rf.logs = append(rf.logs, args.Entries...)
 		Debug(dTerm, "S%v T%v add log %v ~ %v t:%v", rf.me, rf.currentTerm, args.PrevLogIndex+1, rf.logsLen()-1, rf.getLog(-1).Term)
-		//Debug(dTerm, "S%v T%v now log=%v", rf.me, rf.currentTerm, rf.logs)
+		Debug(dTerm, "S%v T%v now log=%v", rf.me, rf.currentTerm, rf.logs)
 	}
 
 	reply.XLen = rf.logsLen()
@@ -575,7 +626,7 @@ func (rf *Raft) sendLogs() {
 					Term:              rf.currentTerm,
 					LeaderId:          rf.me,
 					LastIncludedIndex: rf.lastIncludedIndex,
-					LastIncludedTerm:  rf.lastIncludedTrem,
+					LastIncludedTerm:  rf.lastIncludedTerm,
 					Offset:            0,
 					Data:              rf.snapShot,
 					Done:              true,
@@ -818,7 +869,7 @@ func (rf *Raft) getLog(index int) Log {
 		// 存在log[0],len==1
 		if index == rf.lastIncludedIndex {
 			//Debug(dLeader, "S%v T%v #%v", rf.me, rf.currentTerm, rf.lastIncludedTrem)
-			log.Term = rf.lastIncludedTrem
+			log.Term = rf.lastIncludedTerm
 		} else if index >= 1 && index < rf.logsLen() {
 			// logs:	0  1  2  3
 			// 			   1  2  3   len=4
@@ -936,12 +987,15 @@ func (rf *Raft) commitMsg() {
 func (rf *Raft) HeartBeat() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	Debug(dSnap, "S%v T%v #HeartBeat-1#:%v", rf.me, rf.currentTerm, rf.lastApplied)
 
 	rf.sendLogs()
+	Debug(dSnap, "S%v T%v #HeartBeat0#:%v", rf.me, rf.currentTerm, rf.lastApplied)
 
 	rf.commitMsg()
-
+	Debug(dSnap, "S%v T%v #HeartBeat1#:%v", rf.me, rf.currentTerm, rf.lastApplied)
 	rf.persist()
+	Debug(dSnap, "S%v T%v #HeartBeat2s#:%v", rf.me, rf.currentTerm, rf.lastApplied)
 
 }
 
@@ -1033,12 +1087,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		applyCh:           applyCh,
 		status:            Follower,
 		lastIncludedIndex: 0,
-		lastIncludedTrem:  0,
+		lastIncludedTerm:  0,
 	}
 
 	// Your initialization code here (3A, 3B, 3C).
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.readSnapShot(persister.ReadSnapshot())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
