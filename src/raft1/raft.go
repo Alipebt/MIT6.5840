@@ -197,20 +197,6 @@ func (rf *Raft) readSnapShot(data []byte) {
 		return
 	}
 	rf.snapShot = data
-	//// 把快照发送给客户端，相当于commit到快照的index
-	//applyMsg := raftapi.ApplyMsg{
-	//	CommandValid: false,
-	//	Command:      nil,
-	//	CommandIndex: 0,
-	//
-	//	SnapshotValid: true,
-	//	Snapshot:      rf.snapShot,
-	//	SnapshotTerm:  rf.lastIncludedTerm,
-	//	SnapshotIndex: rf.lastIncludedIndex,
-	//}
-	////rf.mu.Unlock()
-	//rf.applyCh <- applyMsg
-	////rf.mu.Lock()
 }
 
 // how many bytes in Raft's persisted log?
@@ -584,11 +570,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (3B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	//term := rf.currentTerm
-	//isLeader := rf.status == Leader
-	//if !isLeader {
-	//	return -1, term, isLeader
-	//}
+
 	if rf.status != Leader {
 		return -1, rf.currentTerm, false
 	}
@@ -702,10 +684,8 @@ func (rf *Raft) sendLogs() {
 				// Debug(dLeader, "S%v T%v reply success from S%v", rf.me, rf.currentTerm, server)
 				//Debug(dLog, "S%v T%v in S%v reply:%v", rf.me, rf.currentTerm, server, reply)
 				rf.nextIndex[server] = reply.XLen
-				if len(entries) != 0 {
-					rf.matchIndex[server] = reply.XLen - 1
-					Debug(dLog, "S%v T%v append log success in S%v,and entries:%v", rf.me, rf.currentTerm, server, len(entries))
-				}
+				rf.matchIndex[server] = reply.XLen - 1
+				Debug(dLog, "S%v T%v append log success in S%v,and entries:%v", rf.me, rf.currentTerm, server, len(entries))
 			} else {
 				//if rf.nextIndex[server] > rf.lastIncludedIndex {
 				// 未成功接收，则一定返回有XTerm,Xindex,Xlen
@@ -874,22 +854,12 @@ func (rf *Raft) getLog(index int) Log {
 		index = rf.logsLen() + index
 	}
 	if rf.logsLen() > 1 {
-		// 存在log[0],len==1
-		if index == rf.lastIncludedIndex {
-			//Debug(dLeader, "S%v T%v #%v", rf.me, rf.currentTerm, rf.lastIncludedTerm)
-			log.Term = rf.lastIncludedTerm
-		} else if index >= 0 && index < rf.logsLen() {
+		//// 存在log[0],len==1
+		if index >= 0 && index < rf.logsLen() {
 			// logs:	0  1  2  3
 			// 			   1  2  3   len=4
 			if index-rf.lastIncludedIndex >= 0 && index-rf.lastIncludedIndex < len(rf.logs) {
 				log = rf.logs[index-rf.lastIncludedIndex]
-			}
-		} else if index <= -1 && index > -rf.logsLen() {
-			// logs:	0  1  2  3
-			// 		      -3 -2 -1	 len=4
-			//          0  4  5  6   base=3
-			if rf.logsLen()+index-rf.lastIncludedIndex > 0 && rf.logsLen()+index-rf.lastIncludedIndex < len(rf.logs) {
-				log = rf.logs[rf.logsLen()+index-rf.lastIncludedIndex]
 			}
 		}
 	}
@@ -1014,17 +984,6 @@ func (rf *Raft) handleHeartBeat(args *AppendEntriesArgs) {
 		rf.votedFor = args.LeaderId
 		rf.resetElectionTicker()
 	}
-	// 3C 5 部分无法通过
-	//if args.Term > rf.currentTerm {
-	//	// 新Term，新Leader的心跳
-	//	rf.updateNodeWithTerm(args.Term)
-	//	rf.votedFor = args.LeaderId
-	//	rf.resetElectionTicker()
-	//} else if args.Term == rf.currentTerm {
-	//	if rf.votedFor == args.LeaderId {
-	//		rf.resetElectionTicker()
-	//	}
-	//}
 }
 
 // updateNodeWithTerm update the term and change node`s new term status
