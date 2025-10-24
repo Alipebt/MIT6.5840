@@ -165,6 +165,13 @@ def main(
                     print(line.strip())
                 continue
 
+            if ('labrpc' in line):
+                if colorize:
+                    print(f"[{TOPICS['INFO']}]{line.strip()}[/{TOPICS['INFO']}]")
+                else:
+                    print(line.strip())
+                continue
+
             time, topic, *msg = line.strip().split(" ")
             # To ignore some topics
             if topic not in topics:
